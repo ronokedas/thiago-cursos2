@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --brand-gold: #d4a72c;
+  --brand-gold-bright: #f1c75b;
+  --brand-black: #080808;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--brand-gold) 35%, transparent);
+  color: #fff8df;
+}
+
+body {
+  background: var(--brand-black);
+}

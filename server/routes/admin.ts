@@ -1,0 +1,1106 @@
+import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR } from '../db.js';
+import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
+import { logAudit } from '../audit.js';
+import { sendWelcomeEmail } from '../email.js';
+
+export const adminRouter = Router();
+
+function onlyDigits(value: unknown): string {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function isValidCpf(value: string): boolean {
+  if (!value) return true;
+  if (value.length !== 11 || /^(\d)\1+$/.test(value)) return false;
+  let sum = 0;
+  for (let i = 0; i < 9; i++) sum += Number(value[i]) * (10 - i);
+  let digit = (sum * 10) % 11;
+  if (digit === 10) digit = 0;
+  if (digit !== Number(value[9])) return false;
+  sum = 0;
+  for (let i = 0; i < 10; i++) sum += Number(value[i]) * (11 - i);
+  digit = (sum * 10) % 11;
+  if (digit === 10) digit = 0;
+  return digit === Number(value[10]);
+}
+
+// Require admin authentication for all routes
+adminRouter.use(requireAdmin);
+
+// Configure multer for secure video and material uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (!fs.existsSync(VIDEO_DIR)) {
+      fs.mkdirSync(VIDEO_DIR, { recursive: true });
+    }
+    cb(null, VIDEO_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeName = `vid_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${ext}`;
+    cb(null, safeName);
+  },
+});
+
+const upload = multer({
+  storage,
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['video/mp4', 'video/webm', 'video/quicktime'].includes(file.mimetype);
+    cb(allowed ? null : new Error('Envie um vídeo MP4, WebM ou MOV válido.'), allowed);
+  },
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB limit for videos
+});
+
+const materialUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, MATERIAL_DIR),
+    filename: (_req, file, cb) => cb(null, `mat_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  fileFilter: (_req, file, cb) => cb(null, ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.mimetype)),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+function removeLessonVideo(lesson: Lesson): void {
+  if (!lesson.videoFileName) return;
+  const filePath = path.join(VIDEO_DIR, lesson.videoFileName);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
+// GET /api/admin/metrics
+adminRouter.get('/metrics', (req: Request, res: Response): void => {
+  const db = readDb();
+  const totalUsers = db.users.filter(u => u.role === 'STUDENT').length;
+  const activeUsers = db.users.filter(u => u.role === 'STUDENT' && u.status === 'ACTIVE').length;
+  const suspendedUsers = db.users.filter(u => u.role === 'STUDENT' && u.status === 'SUSPENDED').length;
+  const expiredUsers = db.users.filter(u => u.role === 'STUDENT' && u.status === 'EXPIRED').length;
+  const blockedUsers = db.users.filter(u => u.role === 'STUDENT' && u.status === 'BLOCKED').length;
+  const activeSessions = db.sessions.filter(s => s.isActive).length;
+
+  const totalLessons = db.lessons.filter(l => l.status === 'PUBLISHED').length;
+  const totalVideos = db.lessons.filter(l => l.status === 'PUBLISHED' && Boolean(l.videoFileName || l.playbackId)).length;
+  const totalModules = db.modules.filter(m => m.status === 'PUBLISHED').length;
+  const totalProgressRecords = db.lessonProgress.length;
+  const completedLessons = db.lessonProgress.filter(p => p.isCompleted).length;
+
+  res.json({
+    totalStudents: totalUsers,
+    activeStudents: activeUsers,
+    expiredStudents: expiredUsers,
+    suspendedStudents: suspendedUsers,
+    activeSessions,
+    totalModules,
+    totalLessons,
+    totalVideos,
+    users: {
+      total: totalUsers,
+      active: activeUsers,
+      suspended: suspendedUsers,
+      expired: expiredUsers,
+      blocked: blockedUsers,
+    },
+    sessions: {
+      active: activeSessions,
+    },
+    content: {
+      totalModules,
+      totalLessons,
+      totalProgressRecords,
+      completedLessons,
+    },
+  });
+});
+
+// GET /api/admin/users
+adminRouter.get('/users', (req: Request, res: Response): void => {
+  const { search, status, page = '1', limit = '50' } = req.query;
+  const db = readDb();
+
+  let list = db.users.filter(u => u.role === 'STUDENT');
+
+  if (status && typeof status === 'string' && status !== 'ALL') {
+    list = list.filter(u => u.status === status);
+  }
+
+  if (search && typeof search === 'string') {
+    const q = search.toLowerCase();
+    list = list.filter(u => u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+  }
+
+  // Calculate dynamic data for each student
+  const totalCount = list.length;
+  const pageNum = parseInt(page as string, 10) || 1;
+  const limitNum = parseInt(limit as string, 10) || 50;
+  const startIndex = (pageNum - 1) * limitNum;
+  const paginated = list.slice(startIndex, startIndex + limitNum);
+
+  const publishedLessons = db.lessons.filter(l => l.status === 'PUBLISHED');
+
+  const usersWithMeta = paginated.map(user => {
+    const activeSession = db.sessions.find(s => s.userId === user.id && s.isActive);
+    const overrides = db.userContentOverrides.filter(o => o.userId === user.id);
+    const hasGlobalAllow = overrides.some(o => o.contentType === 'COURSE' && o.action === 'ALLOW');
+
+    const userProgress = db.lessonProgress.filter(p => p.userId === user.id);
+    const completedCount = userProgress.filter(p => p.isCompleted).length;
+    const progressPercent = publishedLessons.length > 0 ? Math.round((completedCount / publishedLessons.length) * 100) : 0;
+
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      cpf: user.cpf,
+      role: user.role,
+      status: user.status,
+      startDate: user.startDate,
+      expirationDate: user.expirationDate,
+      firstAccessAt: user.firstAccessAt,
+      lastAccessAt: user.lastAccessAt,
+      hasActiveSession: !!activeSession,
+      activeSessionInfo: activeSession ? { device: activeSession.deviceInfo, ip: activeSession.ipAddress, lastActivity: activeSession.lastActivityAt } : null,
+      hasGlobalOverride: hasGlobalAllow,
+      progressPercent,
+      completedLessons: completedCount,
+      notes: user.notes,
+      createdAt: user.createdAt,
+    };
+  });
+
+  res.json({
+    users: usersWithMeta,
+    pagination: {
+      total: totalCount,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(totalCount / limitNum),
+    },
+  });
+});
+
+// GET /api/admin/users/:id (student detail)
+adminRouter.get('/users/:id', (req: Request, res: Response): void => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.params.id && u.role === 'STUDENT');
+  if (!user) {
+    res.status(404).json({ error: 'Aluno não encontrado.' });
+    return;
+  }
+  const activeSession = db.sessions.find(s => s.userId === user.id && s.isActive);
+  res.json({
+    user: { ...user, passwordHash: undefined },
+    overrides: db.userContentOverrides.filter(o => o.userId === user.id),
+    progress: db.lessonProgress.filter(p => p.userId === user.id),
+    activeSession: activeSession ? {
+      id: activeSession.id, userId: user.id, userName: user.name, userEmail: user.email,
+      ipAddress: activeSession.ipAddress, device: activeSession.deviceInfo,
+      createdAt: activeSession.createdAt, lastActivityAt: activeSession.lastActivityAt,
+    } : null,
+  });
+});
+
+// POST /api/admin/users (Create new student)
+adminRouter.post('/users', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const { name, email, phone, cpf, password, autoGeneratePassword, durationMonths = 12, startDate, unlockAllImmediately, notes } = req.body;
+
+  if (!name || !email) {
+    res.status(400).json({ error: 'Nome e e-mail são obrigatórios.' });
+    return;
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedPhone = onlyDigits(phone);
+  const normalizedCpf = onlyDigits(cpf);
+  if (normalizedPhone && ![10, 11].includes(normalizedPhone.length)) {
+    res.status(400).json({ error: 'Telefone inválido. Informe DDD e número.' });
+    return;
+  }
+  if (normalizedCpf && !isValidCpf(normalizedCpf)) {
+    res.status(400).json({ error: 'CPF inválido.' });
+    return;
+  }
+  const db = readDb();
+
+  const existing = db.users.find(u => u.email.toLowerCase() === normalizedEmail);
+  if (existing) {
+    res.status(409).json({ error: 'Já existe um usuário cadastrado com este e-mail.' });
+    return;
+  }
+  if (normalizedCpf && db.users.some(u => u.cpf === normalizedCpf)) {
+    res.status(409).json({ error: 'Já existe um usuário cadastrado com este CPF.' });
+    return;
+  }
+
+  let finalPassword = password;
+  let generatedRandom = false;
+
+  if (!autoGeneratePassword && finalPassword && String(finalPassword).length < 8) {
+    res.status(400).json({ error: 'A senha personalizada deve ter no mínimo 8 caracteres.' });
+    return;
+  }
+
+  if (autoGeneratePassword || !finalPassword) {
+    finalPassword = generateRandomPassword(12);
+    generatedRandom = true;
+  }
+
+  const now = new Date();
+  const start = startDate ? new Date(startDate) : now;
+  const expDate = new Date(start.getTime() + (Number(durationMonths) || 12) * 30 * 24 * 60 * 60 * 1000);
+
+  const newUser: User = {
+    id: `usr_${crypto.randomUUID()}`,
+    name: String(name).trim(),
+    email: normalizedEmail,
+    phone: normalizedPhone || undefined,
+    cpf: normalizedCpf || undefined,
+    passwordHash: hashPassword(finalPassword),
+    role: 'STUDENT',
+    status: 'ACTIVE',
+    startDate: start.toISOString(),
+    expirationDate: expDate.toISOString(),
+    firstAccessAt: null,
+    lastAccessAt: null,
+    forcePasswordChange: true,
+    notes: notes ? String(notes).trim() : undefined,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  };
+
+  db.users.push(newUser);
+
+  // If unlockAllImmediately was checked, create a global course ALLOW override
+  if (unlockAllImmediately) {
+    const mainCourse = db.courses[0];
+    if (mainCourse) {
+      const override: UserContentOverride = {
+        id: `ovr_${crypto.randomUUID()}`,
+        userId: newUser.id,
+        contentType: 'COURSE',
+        contentId: mainCourse.id,
+        action: 'ALLOW',
+        reason: 'Liberação total concedida no cadastro manual pelo administrador.',
+        grantedBy: req.auth.user.id,
+        createdAt: now.toISOString(),
+      };
+      db.userContentOverrides.push(override);
+    }
+  }
+
+  try {
+    await writeDbAndWait(db);
+  } catch {
+    res.status(503).json({ error: 'Não foi possível confirmar o cadastro no banco de dados.' });
+    return;
+  }
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'CREATE_STUDENT',
+    entityType: 'USER',
+    entityId: newUser.id,
+    details: { name: newUser.name, email: newUser.email, durationMonths, unlockAllImmediately },
+  });
+  // O cadastro já foi confirmado no PostgreSQL. O envio de e-mail não pode
+  // bloquear a resposta caso o SMTP esteja lento ou indisponível.
+  void sendWelcomeEmail(newUser.email, newUser.name, finalPassword).catch(error => {
+    console.error('Falha ao enviar e-mail de boas-vindas:', error);
+  });
+
+  res.status(201).json({
+    message: 'Aluno criado com sucesso.',
+    user: {
+      id: newUser.id,
+      name: newUser.name,
+      email: newUser.email,
+      phone: newUser.phone,
+      cpf: newUser.cpf,
+      startDate: newUser.startDate,
+      expirationDate: newUser.expirationDate,
+      status: newUser.status,
+    },
+    generatedPassword: finalPassword,
+    temporaryPassword: finalPassword,
+    emailSimulation: {
+      to: newUser.email,
+      subject: 'Seu acesso à Mentoria A Mecânica foi criado',
+      temporaryPassword: finalPassword,
+    },
+  });
+});
+
+// PUT /api/admin/users/:id
+adminRouter.put('/users/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const { name, email, phone, cpf, status, startDate, expirationDate, notes } = req.body;
+
+  const db = readDb();
+  const user = db.users.find(u => u.id === id);
+  if (!user) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return;
+  }
+
+  if (name) user.name = String(name).trim();
+  if (email) {
+    const normalized = String(email).trim().toLowerCase();
+    const existing = db.users.find(u => u.email.toLowerCase() === normalized && u.id !== id);
+    if (existing) {
+      res.status(409).json({ error: 'Outro usuário já utiliza este e-mail.' });
+      return;
+    }
+    user.email = normalized;
+  }
+  if (phone !== undefined) {
+    const normalizedPhone = onlyDigits(phone);
+    if (normalizedPhone && ![10, 11].includes(normalizedPhone.length)) {
+      res.status(400).json({ error: 'Telefone inválido.' });
+      return;
+    }
+    user.phone = normalizedPhone || undefined;
+  }
+  if (cpf !== undefined) {
+    const normalizedCpf = onlyDigits(cpf);
+    if (normalizedCpf && !isValidCpf(normalizedCpf)) {
+      res.status(400).json({ error: 'CPF inválido.' });
+      return;
+    }
+    const duplicateCpf = db.users.find(u => u.cpf === normalizedCpf && u.id !== id);
+    if (normalizedCpf && duplicateCpf) {
+      res.status(409).json({ error: 'Outro usuário já utiliza este CPF.' });
+      return;
+    }
+    user.cpf = normalizedCpf || undefined;
+  }
+  if (status) user.status = status;
+  if (startDate) user.startDate = new Date(startDate).toISOString();
+  if (expirationDate) user.expirationDate = new Date(expirationDate).toISOString();
+  if (notes !== undefined) user.notes = String(notes).trim();
+  user.updatedAt = new Date().toISOString();
+
+  // If status is SUSPENDED or BLOCKED, revoke active sessions
+  if (user.status === 'SUSPENDED' || user.status === 'BLOCKED') {
+    for (const s of db.sessions) {
+      if (s.userId === user.id && s.isActive) {
+        s.isActive = false;
+        s.revokedAt = new Date().toISOString();
+        s.revokedReason = `STATUS_ALTERADO_PARA_${user.status}`;
+      }
+    }
+  }
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'UPDATE_STUDENT',
+    entityType: 'USER',
+    entityId: user.id,
+    details: { changes: req.body },
+  });
+
+  res.json({ message: 'Dados do aluno atualizados com sucesso.', user });
+});
+
+adminRouter.delete('/users/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.params.id && u.role === 'STUDENT');
+  if (!user) { res.status(404).json({ error: 'Aluno não encontrado.' }); return; }
+  db.users = db.users.filter(u => u.id !== user.id);
+  db.sessions = db.sessions.filter(s => s.userId !== user.id);
+  db.lessonProgress = db.lessonProgress.filter(p => p.userId !== user.id);
+  db.userContentOverrides = db.userContentOverrides.filter(o => o.userId !== user.id);
+  db.passwordResetTokens = db.passwordResetTokens.filter(t => t.userId !== user.id);
+  writeDb(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'DELETE_STUDENT', entityType: 'USER', entityId: user.id, details: { email: user.email } });
+  res.json({ message: 'Aluno removido com sucesso.' });
+});
+
+// POST /api/admin/users/:id/override-all (Instant unlock / restore 7-day rule)
+adminRouter.post('/users/:id/override-all', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const { action } = req.body; // 'UNLOCK_ALL' or 'RESTORE_RULES'
+
+  const db = readDb();
+  const user = db.users.find(u => u.id === id);
+  if (!user) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return;
+  }
+
+  const mainCourse = db.courses[0];
+  if (!mainCourse) {
+    res.status(404).json({ error: 'Curso não encontrado.' });
+    return;
+  }
+
+  if (action === 'UNLOCK_ALL') {
+    // Remove existing denies
+    db.userContentOverrides = db.userContentOverrides.filter(o => !(o.userId === id && o.contentType === 'COURSE'));
+    db.userContentOverrides.push({
+      id: `ovr_${crypto.randomUUID()}`,
+      userId: id,
+      contentType: 'COURSE',
+      contentId: mainCourse.id,
+      action: 'ALLOW',
+      reason: 'Liberação total de todos os conteúdos concedida manualmente pelo administrador.',
+      grantedBy: req.auth.user.id,
+      createdAt: new Date().toISOString(),
+    });
+
+    logAudit({
+      actorId: req.auth.user.id,
+      actorName: req.auth.user.name,
+      actorRole: req.auth.user.role,
+      action: 'MANUAL_UNLOCK_ALL',
+      entityType: 'USER',
+      entityId: id,
+      details: { studentName: user.name },
+    });
+
+    writeDb(db);
+    res.json({ message: 'Todos os conteúdos foram liberados imediatamente para este aluno.' });
+  } else {
+    // RESTORE_RULES
+    db.userContentOverrides = db.userContentOverrides.filter(o => !(o.userId === id && o.contentType === 'COURSE' && o.action === 'ALLOW'));
+    
+    logAudit({
+      actorId: req.auth.user.id,
+      actorName: req.auth.user.name,
+      actorRole: req.auth.user.role,
+      action: 'RESTORE_AUTOMATIC_RULES',
+      entityType: 'USER',
+      entityId: id,
+      details: { studentName: user.name },
+    });
+
+    writeDb(db);
+    res.json({ message: 'Regras automáticas normais (7 dias) restauradas para este aluno.' });
+  }
+});
+
+// POST /api/admin/users/:id/override-item (ALLOW / DENY single module or lesson)
+adminRouter.post('/users/:id/override-item', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const { contentType, contentId, action } = req.body; // action: 'ALLOW' | 'DENY' | 'REMOVE'
+
+  const db = readDb();
+  const user = db.users.find(u => u.id === id);
+  if (!user) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return;
+  }
+
+  // Remove previous override for this item
+  db.userContentOverrides = db.userContentOverrides.filter(o => !(o.userId === id && o.contentType === contentType && o.contentId === contentId));
+
+  if (action === 'ALLOW' || action === 'DENY') {
+    db.userContentOverrides.push({
+      id: `ovr_${crypto.randomUUID()}`,
+      userId: id,
+      contentType,
+      contentId,
+      action,
+      reason: `Exceção manual ${action} configurada pelo administrador.`,
+      grantedBy: req.auth.user.id,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: `MANUAL_OVERRIDE_${action}`,
+    entityType: contentType,
+    entityId: contentId,
+    details: { studentId: id, studentName: user.name, action },
+  });
+
+  res.json({ message: 'Regra individual atualizada com sucesso.' });
+});
+
+// POST /api/admin/users/:id/revoke-session (Force disconnect student)
+adminRouter.post('/users/:id/revoke-session', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const db = readDb();
+  const user = db.users.find(u => u.id === id);
+
+  let count = 0;
+  for (const s of db.sessions) {
+    if (s.userId === id && s.isActive) {
+      s.isActive = false;
+      s.revokedAt = new Date().toISOString();
+      s.revokedReason = 'ENCERRADA_PELO_ADMINISTRADOR';
+      count++;
+    }
+  }
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'FORCE_DISCONNECT_SESSION',
+    entityType: 'USER',
+    entityId: id,
+    details: { studentName: user?.name, sessionsClosed: count },
+  });
+
+  res.json({ message: `${count} sessão(ões) ativa(s) do aluno foram desconectadas.` });
+});
+
+// POST /api/admin/users/:id/reset-password
+adminRouter.post('/users/:id/reset-password', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const { newPassword, autoGenerate } = req.body;
+
+  const db = readDb();
+  const user = db.users.find(u => u.id === id);
+  if (!user) {
+    res.status(404).json({ error: 'Usuário não encontrado.' });
+    return;
+  }
+
+  let finalPassword = newPassword;
+  if (autoGenerate || !finalPassword) {
+    finalPassword = generateRandomPassword(12);
+  }
+
+  user.passwordHash = hashPassword(finalPassword);
+  user.forcePasswordChange = true;
+  user.updatedAt = new Date().toISOString();
+
+  // Invalidate active sessions
+  for (const s of db.sessions) {
+    if (s.userId === user.id && s.isActive) {
+      s.isActive = false;
+      s.revokedAt = new Date().toISOString();
+      s.revokedReason = 'SENHA_REDEFINIDA_PELO_ADMIN';
+    }
+  }
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'ADMIN_RESET_PASSWORD',
+    entityType: 'USER',
+    entityId: user.id,
+    details: { studentName: user.name },
+  });
+
+  res.json({
+    message: 'Senha do aluno redefinida com sucesso.',
+    temporaryPassword: finalPassword,
+  });
+});
+
+// GET /api/admin/courses (Full management tree)
+adminRouter.post('/courses', (req: Request & { auth?: any }, res: Response): void => {
+  const { title, description = '', thumbnailUrl = '', status = 'DRAFT' } = req.body;
+  if (!title || !String(title).trim()) { res.status(400).json({ error: 'Título do curso é obrigatório.' }); return; }
+  const db = readDb();
+  const now = new Date().toISOString();
+  const course: Course = { id: `crs_${crypto.randomUUID()}`, title: String(title).trim(), description: String(description), thumbnailUrl: String(thumbnailUrl), status, createdAt: now, updatedAt: now };
+  db.courses.push(course); writeDb(db); res.status(201).json({ message: 'Curso criado com sucesso.', course });
+});
+
+adminRouter.put('/courses/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb(); const course = db.courses.find(c => c.id === req.params.id);
+  if (!course) { res.status(404).json({ error: 'Curso não encontrado.' }); return; }
+  const { title, description, thumbnailUrl, status } = req.body;
+  if (title !== undefined) course.title = String(title).trim();
+  if (description !== undefined) course.description = String(description);
+  if (thumbnailUrl !== undefined) course.thumbnailUrl = String(thumbnailUrl);
+  if (status !== undefined) course.status = status;
+  course.updatedAt = new Date().toISOString(); writeDb(db); res.json({ message: 'Curso atualizado com sucesso.', course });
+});
+
+adminRouter.get('/courses', (req: Request, res: Response): void => {
+  const db = readDb();
+  const courses = db.courses.map(c => {
+    const modules = db.modules
+      .filter(m => m.courseId === c.id)
+      .sort((a, b) => a.position - b.position)
+      .map(m => {
+        const topics = db.topics
+          .filter(t => t.moduleId === m.id)
+          .sort((a, b) => a.position - b.position)
+          .map(t => {
+            const lessons = db.lessons
+              .filter(l => l.topicId === t.id)
+              .sort((a, b) => a.position - b.position);
+            return { ...t, lessons };
+          });
+        return { ...m, releaseRule: m.releaseType, topics };
+      });
+    return { ...c, modules };
+  });
+
+  res.json({ courses, course: courses[0] || null, modules: courses[0]?.modules || [] });
+});
+
+adminRouter.post('/reorder', (req: Request, res: Response): void => {
+  const { contentType, items } = req.body as { contentType: 'MODULE' | 'TOPIC' | 'LESSON'; items: Array<{ id: string; position: number }> };
+  const db = readDb();
+  const collection = contentType === 'MODULE' ? db.modules : contentType === 'TOPIC' ? db.topics : db.lessons;
+  if (!Array.isArray(items) || !collection) { res.status(400).json({ error: 'Dados de ordenação inválidos.' }); return; }
+  for (const item of items) { const entity = collection.find(value => value.id === item.id); if (entity) entity.position = Number(item.position); }
+  writeDb(db); res.json({ message: 'Ordem atualizada com sucesso.' });
+});
+
+// POST /api/admin/modules
+adminRouter.post('/modules', (req: Request & { auth?: any }, res: Response): void => {
+  const { courseId, title, description, releaseType = 'AFTER_DAYS', releaseDays = 7, releaseDate, position } = req.body;
+  if (!title) {
+    res.status(400).json({ error: 'Título do módulo é obrigatório.' });
+    return;
+  }
+
+  const db = readDb();
+  const cId = courseId || db.courses[0]?.id;
+
+  const existingInCourse = db.modules.filter(m => m.courseId === cId);
+  const pos = position !== undefined ? Number(position) : existingInCourse.length + 1;
+
+  const newModule: Module = {
+    id: `mod_${crypto.randomUUID()}`,
+    courseId: cId,
+    title: String(title).trim(),
+    description: description ? String(description).trim() : '',
+    position: pos,
+    releaseType,
+    releaseDays: Number(releaseDays) || 0,
+    releaseDate: releaseDate || null,
+    status: 'PUBLISHED',
+  };
+
+  db.modules.push(newModule);
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'CREATE_MODULE',
+    entityType: 'MODULE',
+    entityId: newModule.id,
+    details: { title: newModule.title, releaseType, releaseDays },
+  });
+
+  res.status(201).json({ message: 'Módulo criado com sucesso.', module: newModule });
+});
+
+// PUT /api/admin/modules/:id
+adminRouter.put('/modules/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const { title, description, releaseType, releaseDays, releaseDate, position, status } = req.body;
+
+  const db = readDb();
+  const mod = db.modules.find(m => m.id === id);
+  if (!mod) {
+    res.status(404).json({ error: 'Módulo não encontrado.' });
+    return;
+  }
+
+  if (title) mod.title = String(title).trim();
+  if (description !== undefined) mod.description = String(description).trim();
+  if (releaseType) mod.releaseType = releaseType;
+  if (releaseDays !== undefined) mod.releaseDays = Number(releaseDays);
+  if (releaseDate !== undefined) mod.releaseDate = releaseDate;
+  if (position !== undefined) mod.position = Number(position);
+  if (status) mod.status = status;
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'UPDATE_MODULE',
+    entityType: 'MODULE',
+    entityId: id,
+    details: { title: mod.title, releaseType: mod.releaseType, releaseDays: mod.releaseDays },
+  });
+
+  res.json({ message: 'Módulo atualizado com sucesso.', module: mod });
+});
+
+// DELETE /api/admin/modules/:id
+adminRouter.delete('/modules/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const db = readDb();
+  const mod = db.modules.find(m => m.id === id);
+  if (!mod) {
+    res.status(404).json({ error: 'Módulo não encontrado.' });
+    return;
+  }
+
+  db.lessons.filter(l => l.moduleId === id).forEach(removeLessonVideo);
+  db.modules = db.modules.filter(m => m.id !== id);
+  db.topics = db.topics.filter(t => t.moduleId !== id);
+  db.lessons = db.lessons.filter(l => l.moduleId !== id);
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'DELETE_MODULE',
+    entityType: 'MODULE',
+    entityId: id,
+    details: { title: mod.title },
+  });
+
+  res.json({ message: 'Módulo e suas aulas foram removidos.' });
+});
+
+// POST /api/admin/topics
+adminRouter.post('/topics', (req: Request & { auth?: any }, res: Response): void => {
+  const { moduleId, title, description, position } = req.body;
+  if (!moduleId || !title) {
+    res.status(400).json({ error: 'Módulo e título são obrigatórios.' });
+    return;
+  }
+
+  const db = readDb();
+  const existing = db.topics.filter(t => t.moduleId === moduleId);
+
+  const topic: Topic = {
+    id: `top_${crypto.randomUUID()}`,
+    moduleId,
+    title: String(title).trim(),
+    description: description ? String(description).trim() : '',
+    position: position !== undefined ? Number(position) : existing.length + 1,
+  };
+
+  db.topics.push(topic);
+  writeDb(db);
+
+  res.status(201).json({ message: 'Tópico criado com sucesso.', topic });
+});
+
+adminRouter.put('/topics/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const { title, description, position } = req.body;
+  const db = readDb();
+  const topic = db.topics.find(t => t.id === req.params.id);
+  if (!topic) { res.status(404).json({ error: 'Tópico não encontrado.' }); return; }
+  if (title !== undefined && !String(title).trim()) { res.status(400).json({ error: 'Título do tópico é obrigatório.' }); return; }
+  if (title !== undefined) topic.title = String(title).trim();
+  if (description !== undefined) topic.description = String(description).trim();
+  if (position !== undefined) topic.position = Number(position);
+  writeDb(db);
+  res.json({ message: 'Tópico atualizado com sucesso.', topic });
+});
+
+adminRouter.delete('/topics/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb();
+  const topic = db.topics.find(t => t.id === req.params.id);
+  if (!topic) { res.status(404).json({ error: 'Tópico não encontrado.' }); return; }
+  db.topics = db.topics.filter(t => t.id !== topic.id);
+  db.lessons = db.lessons.filter(l => l.topicId !== topic.id);
+  writeDb(db);
+  res.json({ message: 'Tópico e suas aulas foram removidos.' });
+});
+
+// POST /api/admin/lessons
+adminRouter.post('/lessons', (req: Request & { auth?: any }, res: Response): void => {
+  const { topicId, moduleId, title, description, durationSeconds, isFreePreview } = req.body;
+  if (!topicId || !moduleId || !title) {
+    res.status(400).json({ error: 'Tópico, Módulo e Título são obrigatórios.' });
+    return;
+  }
+
+  const db = readDb();
+  const parentModule = db.modules.find(m => m.id === moduleId);
+  const parentTopic = db.topics.find(t => t.id === topicId && t.moduleId === moduleId);
+  if (!parentModule || !parentTopic) {
+    res.status(400).json({ error: 'Tópico e módulo não correspondem.' });
+    return;
+  }
+  const mod = parentModule;
+  const existing = db.lessons.filter(l => l.topicId === topicId);
+
+  const lesson: Lesson = {
+    id: `les_${crypto.randomUUID()}`,
+    topicId,
+    moduleId,
+    courseId: mod?.courseId || db.courses[0]?.id || 'crs_1',
+    title: String(title).trim(),
+    description: description ? String(description).trim() : '',
+    position: existing.length + 1,
+    durationSeconds: Number(durationSeconds) || 600,
+    videoFileName: null,
+    videoProvider: 'LOCAL_SECURE',
+    supplementaryMaterials: [],
+    releaseType: 'INHERIT',
+    releaseDays: 0,
+    releaseDate: null,
+    isFreePreview: Boolean(isFreePreview),
+    status: 'PUBLISHED',
+  };
+
+  db.lessons.push(lesson);
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'CREATE_LESSON',
+    entityType: 'LESSON',
+    entityId: lesson.id,
+    details: { title: lesson.title, moduleId },
+  });
+
+  res.status(201).json({ message: 'Aula criada com sucesso.', lesson });
+});
+
+// PUT /api/admin/lessons/:id
+adminRouter.put('/lessons/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const { title, description, durationSeconds, isFreePreview, status, supplementaryMaterials, releaseType, releaseDays, releaseDate } = req.body;
+
+  const db = readDb();
+  const lesson = db.lessons.find(l => l.id === id);
+  if (!lesson) {
+    res.status(404).json({ error: 'Aula não encontrada.' });
+    return;
+  }
+
+  if (title) lesson.title = String(title).trim();
+  if (description !== undefined) lesson.description = String(description).trim();
+  if (durationSeconds !== undefined) lesson.durationSeconds = Number(durationSeconds);
+  if (isFreePreview !== undefined) lesson.isFreePreview = Boolean(isFreePreview);
+  if (status) lesson.status = status;
+  if (supplementaryMaterials) lesson.supplementaryMaterials = supplementaryMaterials;
+  if (releaseType) lesson.releaseType = releaseType;
+  if (releaseDays !== undefined) lesson.releaseDays = Number(releaseDays);
+  if (releaseDate !== undefined) lesson.releaseDate = releaseDate || null;
+
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'UPDATE_LESSON',
+    entityType: 'LESSON',
+    entityId: id,
+    details: { title: lesson.title },
+  });
+
+  res.json({ message: 'Aula atualizada com sucesso.', lesson });
+});
+
+adminRouter.delete('/lessons/:id/video', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb();
+  const lesson = db.lessons.find(l => l.id === req.params.id);
+  if (!lesson) { res.status(404).json({ error: 'Aula não encontrada.' }); return; }
+  if (lesson.videoFileName) {
+    const oldPath = path.join(VIDEO_DIR, lesson.videoFileName);
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+  }
+  lesson.videoFileName = null;
+  lesson.videoSizeBytes = undefined;
+  lesson.videoUploadedAt = null;
+  writeDb(db);
+  res.json({ message: 'Vídeo removido com sucesso.', lesson });
+});
+
+// DELETE /api/admin/lessons/:id
+adminRouter.delete('/lessons/:id', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const db = readDb();
+  const lesson = db.lessons.find(l => l.id === id);
+  if (!lesson) {
+    res.status(404).json({ error: 'Aula não encontrada.' });
+    return;
+  }
+
+  removeLessonVideo(lesson);
+  db.lessons = db.lessons.filter(l => l.id !== id);
+  db.lessonProgress = db.lessonProgress.filter(p => p.lessonId !== id);
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'DELETE_LESSON',
+    entityType: 'LESSON',
+    entityId: id,
+    details: { title: lesson.title },
+  });
+
+  res.json({ message: 'Aula removida com sucesso.' });
+});
+
+// POST /api/admin/lessons/:id/upload-video
+adminRouter.post('/lessons/:id/upload-video', upload.single('video'), (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const file = req.file;
+
+  if (!file) {
+    res.status(400).json({ error: 'Nenhum arquivo de vídeo foi enviado.' });
+    return;
+  }
+
+  const db = readDb();
+  const lesson = db.lessons.find(l => l.id === id);
+  if (!lesson) {
+    // Delete uploaded file to avoid orphan files
+    fs.unlinkSync(file.path);
+    res.status(404).json({ error: 'Aula não encontrada.' });
+    return;
+  }
+
+  // Delete old file if existed
+  if (lesson.videoFileName) {
+    const oldPath = path.join(VIDEO_DIR, lesson.videoFileName);
+    if (fs.existsSync(oldPath)) {
+      try { fs.unlinkSync(oldPath); } catch (e) {}
+    }
+  }
+
+  lesson.videoFileName = file.filename;
+  lesson.videoSizeBytes = file.size;
+  lesson.videoUploadedAt = new Date().toISOString();
+  lesson.videoProvider = 'LOCAL_SECURE';
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'UPLOAD_VIDEO',
+    entityType: 'LESSON',
+    entityId: id,
+    details: { originalName: file.originalname, sizeBytes: file.size, filename: file.filename },
+  });
+
+  res.json({
+    message: 'Vídeo carregado e protegido no servidor com sucesso.',
+    lesson: {
+      id: lesson.id,
+      title: lesson.title,
+      videoFileName: lesson.videoFileName,
+      sizeBytes: file.size,
+    },
+  });
+});
+
+adminRouter.post('/lessons/:id/materials', materialUpload.single('file'), (req: Request & { auth?: any }, res: Response): void => {
+  const file = req.file; const db = readDb(); const lesson = db.lessons.find(l => l.id === req.params.id);
+  if (!file) { res.status(400).json({ error: 'Envie um PDF ou documento válido.' }); return; }
+  if (!lesson) { fs.unlinkSync(file.path); res.status(404).json({ error: 'Aula não encontrada.' }); return; }
+  const materialId = `mat_${crypto.randomUUID()}`;
+  const material = { id: materialId, title: file.originalname, type: file.mimetype === 'application/pdf' ? 'PDF' as const : 'DOCUMENT' as const, url: `/api/student/material/${lesson.id}/${materialId}`, sizeBytes: file.size, storageFileName: file.filename };
+  lesson.supplementaryMaterials.push(material); writeDb(db); res.status(201).json({ message: 'Material enviado com sucesso.', material });
+});
+
+// GET /api/admin/sessions
+adminRouter.get('/sessions', (req: Request, res: Response): void => {
+  const db = readDb();
+  const sessionsWithUser = db.sessions.map(s => {
+    const user = db.users.find(u => u.id === s.userId);
+    return {
+      id: s.id,
+      userId: s.userId,
+      userName: user?.name || 'Desconhecido',
+      userEmail: user?.email || 'Desconhecido',
+      userRole: user?.role || 'STUDENT',
+      ipAddress: s.ipAddress,
+      userAgent: s.userAgent,
+      deviceInfo: s.deviceInfo,
+      isActive: s.isActive,
+      createdAt: s.createdAt,
+      lastActivityAt: s.lastActivityAt,
+      revokedAt: s.revokedAt,
+      revokedReason: s.revokedReason,
+    };
+  });
+
+  res.json({ sessions: sessionsWithUser });
+});
+
+// POST /api/admin/sessions/:id/revoke
+adminRouter.post('/sessions/:id/revoke', (req: Request & { auth?: any }, res: Response): void => {
+  const { id } = req.params;
+  const db = readDb();
+  const session = db.sessions.find(s => s.id === id);
+
+  if (!session) {
+    res.status(404).json({ error: 'Sessão não encontrada.' });
+    return;
+  }
+
+  session.isActive = false;
+  session.revokedAt = new Date().toISOString();
+  session.revokedReason = 'REVOGADA_DIRETO_NO_PAINEL';
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'REVOKE_SESSION',
+    entityType: 'SESSION',
+    entityId: id,
+    details: { targetUserId: session.userId },
+  });
+
+  res.json({ message: 'Sessão revogada com sucesso.' });
+});
+
+// GET /api/admin/audit-logs
+adminRouter.get('/audit-logs', (req: Request, res: Response): void => {
+  const { limit = '100' } = req.query;
+  const db = readDb();
+  const logs = db.auditLogs.slice(0, parseInt(limit as string, 10) || 100);
+  res.json({ logs: logs.map(log => ({ ...log, actorUserId: log.actorId, metadata: log.details })) });
+});
+
+// GET /api/admin/settings
+adminRouter.get('/settings', (req: Request, res: Response): void => {
+  const db = readDb();
+  res.json({ settings: db.systemSettings });
+});
+
+// PUT /api/admin/settings
+adminRouter.put('/settings', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb();
+  db.systemSettings = {
+    ...db.systemSettings,
+    ...req.body,
+    id: 'settings-default',
+  };
+  writeDb(db);
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'UPDATE_SETTINGS',
+    entityType: 'SETTINGS',
+    entityId: 'settings-default',
+    details: req.body,
+  });
+
+  res.json({ message: 'Configurações atualizadas com sucesso.', settings: db.systemSettings });
+});

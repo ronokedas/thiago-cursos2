@@ -1,0 +1,6 @@
+{
+  "name": "Mentoria A Mecânica - Área de Membros",
+  "description": "Plataforma privada de membros e cursos online com streaming protegido, marca d'água dinâmica, liberação progressiva e painel administrativo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
