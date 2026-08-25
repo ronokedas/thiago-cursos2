@@ -12,7 +12,9 @@ Em DNS → Records crie um registro A:
 - Conteúdo: IP público do VPS
 - Proxy: Proxied
 
-Em SSL/TLS → Overview selecione Full (strict). Não use Flexible.
+Em SSL/TLS → Overview, prefira **Full (strict)**. O modo Flexible também é
+possível, mas envia Cloudflare → VPS sem criptografia e exige a configuração
+alternativa descrita abaixo.
 
 ## 2. Preparar o Ubuntu
 
@@ -106,7 +108,7 @@ openssl rand -base64 48
 
 Nunca publique o arquivo .env. Preserve APP_ENCRYPTION_KEY depois de salvar uma senha SMTP pelo painel. DATABASE_URL deve usar a mesma senha de POSTGRES_PASSWORD.
 
-## 7. HTTPS com certificado Origin do Cloudflare
+## 7. HTTPS com certificado Origin do Cloudflare (recomendado)
 
 No Cloudflare, abra SSL/TLS → Origin Server → Create Certificate. Selecione RSA e o host thiago-trader.4dtech.com.br.
 
@@ -170,6 +172,35 @@ sudo nginx -t
 sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 ~~~
+
+### Alternativa: Cloudflare Flexible sem certificado no VPS
+
+Se escolher **Flexible**, não instale certificado Origin. Use somente este
+bloco no Nginx, sem redirecionar a porta 80 para HTTPS:
+
+~~~
+server {
+    listen 80;
+    server_name thiago-trader.4dtech.com.br;
+    client_max_body_size 1G;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600;
+    }
+}
+~~~
+
+Nesse modo, remova o bloco `listen 443 ssl` e não use redirecionamento da porta
+80 para HTTPS. O endereço público continuará HTTPS no Cloudflare, mas a conexão
+entre Cloudflare e VPS ficará em HTTP. Para uso real, Full (strict) é mais seguro.
 
 ## 8. Subir a aplicação
 
