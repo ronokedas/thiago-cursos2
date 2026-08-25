@@ -12,9 +12,8 @@ Em DNS → Records crie um registro A:
 - Conteúdo: IP público do VPS
 - Proxy: Proxied
 
-Em SSL/TLS → Overview, prefira **Full (strict)**. O modo Flexible também é
-possível, mas envia Cloudflare → VPS sem criptografia e exige a configuração
-alternativa descrita abaixo.
+Em SSL/TLS → Overview, selecione **Flexible**. O HTTPS termina no Cloudflare e
+o VPS recebe a conexão HTTP internamente.
 
 ## 2. Preparar o Ubuntu
 
@@ -46,7 +45,6 @@ docker compose version
 ~~~
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
 sudo ufw --force enable
 sudo ufw status verbose
 ~~~
@@ -108,19 +106,10 @@ openssl rand -base64 48
 
 Nunca publique o arquivo .env. Preserve APP_ENCRYPTION_KEY depois de salvar uma senha SMTP pelo painel. DATABASE_URL deve usar a mesma senha de POSTGRES_PASSWORD.
 
-## 7. HTTPS com certificado Origin do Cloudflare (recomendado)
+## 7. Nginx com Cloudflare Flexible
 
-No Cloudflare, abra SSL/TLS → Origin Server → Create Certificate. Selecione RSA e o host thiago-trader.4dtech.com.br.
-
-No VPS, salve o certificado e a chave:
-
-~~~
-sudo mkdir -p /etc/ssl/cloudflare/thiago-trader
-sudo nano /etc/ssl/cloudflare/thiago-trader/origin.pem
-sudo chmod 644 /etc/ssl/cloudflare/thiago-trader/origin.pem
-sudo nano /etc/ssl/cloudflare/thiago-trader/origin.key
-sudo chmod 600 /etc/ssl/cloudflare/thiago-trader/origin.key
-~~~
+No Cloudflare, em **SSL/TLS → Overview**, selecione **Flexible**. Não instale
+certificado Origin no VPS e não redirecione a porta 80 para HTTPS.
 
 Instale o Nginx:
 
@@ -129,25 +118,13 @@ sudo apt install -y nginx
 sudo nano /etc/nginx/sites-available/thiago-trader
 ~~~
 
-Cole:
+Cole somente este bloco:
 
 ~~~
 server {
     listen 80;
     server_name thiago-trader.4dtech.com.br;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name thiago-trader.4dtech.com.br;
-    ssl_certificate /etc/ssl/cloudflare/thiago-trader/origin.pem;
-    ssl_certificate_key /etc/ssl/cloudflare/thiago-trader/origin.key;
     client_max_body_size 1G;
-
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -173,34 +150,8 @@ sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 ~~~
 
-### Alternativa: Cloudflare Flexible sem certificado no VPS
-
-Se escolher **Flexible**, não instale certificado Origin. Use somente este
-bloco no Nginx, sem redirecionar a porta 80 para HTTPS:
-
-~~~
-server {
-    listen 80;
-    server_name thiago-trader.4dtech.com.br;
-    client_max_body_size 1G;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 3600;
-    }
-}
-~~~
-
-Nesse modo, remova o bloco `listen 443 ssl` e não use redirecionamento da porta
-80 para HTTPS. O endereço público continuará HTTPS no Cloudflare, mas a conexão
-entre Cloudflare e VPS ficará em HTTP. Para uso real, Full (strict) é mais seguro.
+O endereço público continuará HTTPS no Cloudflare, mas a conexão entre Cloudflare
+e VPS ficará em HTTP.
 
 ## 8. Subir a aplicação
 
@@ -256,15 +207,15 @@ journalctl -u nginx --no-pager -n 100
 df -h
 ~~~
 
-- Cloudflare 525/526: confira certificado, chave, permissões, nginx -t e Full (strict).
+- Erro do Cloudflare: confira o DNS proxied, o Nginx e se o modo está em Flexible.
 - PostgreSQL: confira POSTGRES_PASSWORD e DATABASE_URL; um volume existente mantém a senha inicial.
 - Upload: confirme client_max_body_size 1G e espaço livre.
 
 ## 12. Checklist final
 
 - [ ] DNS aponta para o VPS e está proxied.
-- [ ] Cloudflare está em Full (strict).
-- [ ] Portas 80/443 liberadas; 3000/5432 fechadas.
+- [ ] Cloudflare está em Flexible.
+- [ ] Porta 80 liberada; 3000/443/5432 não estão públicas.
 - [ ] .env tem senhas fortes e APP_ENCRYPTION_KEY.
 - [ ] App e PostgreSQL estão saudáveis.
 - [ ] Login do administrador funciona.
