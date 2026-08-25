@@ -15,6 +15,9 @@ Em DNS → Records crie um registro A:
 Em SSL/TLS → Overview, selecione **Flexible**. O HTTPS termina no Cloudflare e
 o VPS recebe a conexão HTTP internamente.
 
+Este é o modo usado nesta instalação validada. Não crie certificado Origin e não
+configure HTTPS local no Nginx.
+
 ## 2. Preparar o Ubuntu
 
 Use Ubuntu 22.04 ou 24.04, com pelo menos 2 vCPUs, 4 GB de RAM e espaço suficiente para os vídeos.
@@ -179,6 +182,10 @@ sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build 
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
 curl -I https://thiago-trader.4dtech.com.br
 ~~~
+
+O resultado esperado é `HTTP 200` ou uma resposta normal da aplicação. Se o
+Cloudflare mostrar `521`, confirme que o modo está em Flexible e que a regra de
+firewall da Google Cloud permite TCP na porta 80.
 
 Acesse https://thiago-trader.4dtech.com.br, entre com o administrador definido no .env, troque a senha e configure o SMTP em Configurações.
 
