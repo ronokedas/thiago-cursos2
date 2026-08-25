@@ -156,6 +156,17 @@ export interface SystemSettings {
   watermarkIntervalSeconds: number;
   brandTagline: string;
   noticeBanner: string | null;
+  smtp: {
+    host: string;
+    port: number;
+    secure: boolean;
+    username: string;
+    from: string;
+    encryptedPassword?: string;
+    passwordConfigured: boolean;
+    lastTestAt?: string;
+    lastTestStatus?: 'SUCCESS' | 'FAILED';
+  };
 }
 
 export interface DatabaseSchema {
@@ -211,6 +222,14 @@ export function initDatabase(): void {
         watermarkIntervalSeconds: 15,
         brandTagline: 'Estratégia • Disciplina • Consistência • Resultados',
         noticeBanner: null,
+        smtp: {
+          host: process.env.SMTP_HOST || '',
+          port: Number(process.env.SMTP_PORT || 587),
+          secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true',
+          username: process.env.SMTP_USER || '',
+          from: process.env.SMTP_FROM || 'Mentoria A Mecânica <no-reply@localhost>',
+          passwordConfigured: Boolean(process.env.SMTP_PASSWORD),
+        },
       },
     };
     fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2), 'utf-8');

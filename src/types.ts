@@ -55,7 +55,7 @@ export interface SystemSettings {
   brandTagline: string;
   supportEmail: string;
   timezone: string;
-  defaultAccessDurationMonths: number;
+  defaultAccessMonths: number;
   progressiveReleaseDays: number;
   completionThresholdPercent: number;
   maxActiveSessionsPerUser: number;
@@ -63,6 +63,17 @@ export interface SystemSettings {
   watermarkIntervalSeconds: number;
   watermarkOpacity: number;
   noticeBanner?: string | null;
+  smtp: {
+    host: string;
+    port: number;
+    secure: boolean;
+    username: string;
+    from: string;
+    passwordConfigured: boolean;
+    lastTestAt?: string;
+    lastTestStatus?: 'SUCCESS' | 'FAILED';
+  };
+  smtpPassword?: string;
 }
 
 export interface UserContentOverride {

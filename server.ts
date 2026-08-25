@@ -15,6 +15,9 @@ import { hydrateDatabaseFromPostgres } from './server/db.js';
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
+  if (process.env.NODE_ENV === 'production' && !process.env.APP_ENCRYPTION_KEY) {
+    throw new Error('APP_ENCRYPTION_KEY é obrigatória em produção.');
+  }
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 
   // Initialize PostgreSQL and hydrate the compatibility model before seeding.

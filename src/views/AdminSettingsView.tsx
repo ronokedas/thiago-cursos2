@@ -1,12 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, ShieldCheck, Clock, Bell, Save, CheckCircle2, Globe } from 'lucide-react';
+import { Settings, ShieldCheck, Clock, Bell, Save, CheckCircle2, Globe, Users, UserPlus, KeyRound, Send, AlertCircle } from 'lucide-react';
 import { SystemSettings } from '../types';
+import { useAuth } from '../context/AuthContext';
 
 export const AdminSettingsView: React.FC = () => {
+  const { user } = useAuth();
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [admins, setAdmins] = useState<any[]>([]);
+  const [adminForm, setAdminForm] = useState({ name: '', email: '', phone: '', password: '', autoGeneratePassword: true });
+  const [adminSaving, setAdminSaving] = useState(false);
+  const [adminMessage, setAdminMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [createdAdminPassword, setCreatedAdminPassword] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -14,7 +21,7 @@ export const AdminSettingsView: React.FC = () => {
         const res = await fetch('/api/admin/settings');
         if (res.ok) {
           const data = await res.json();
-          setSettings(data);
+          setSettings(data.settings);
         }
       } catch (e) {
         console.error(e);
@@ -25,6 +32,14 @@ export const AdminSettingsView: React.FC = () => {
 
     fetchSettings();
   }, []);
+
+  const fetchAdmins = async () => {
+    if (user?.role !== 'SUPER_ADMIN') return;
+    const res = await fetch('/api/admin/admins');
+    if (res.ok) setAdmins((await res.json()).admins || []);
+  };
+
+  useEffect(() => { void fetchAdmins(); }, [user?.role]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,10 +52,12 @@ export const AdminSettingsView: React.FC = () => {
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: (() => { const { smtpPassword, ...safeSettings } = settings; return JSON.stringify({ ...safeSettings, smtp: { ...settings.smtp, password: smtpPassword || '' } }); })(),
       });
 
       if (res.ok) {
+        const data = await res.json();
+        setSettings({ ...data.settings, smtpPassword: '' });
         setSavedSuccess(true);
         setTimeout(() => setSavedSuccess(false), 3000);
       }
@@ -49,6 +66,48 @@ export const AdminSettingsView: React.FC = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleCreateAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminSaving(true); setAdminMessage(null); setCreatedAdminPassword(null);
+    try {
+      const res = await fetch('/api/admin/admins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(adminForm) });
+      const data = await res.json();
+      if (!res.ok) { setAdminMessage({ type: 'error', text: data.error || 'Não foi possível criar o administrador.' }); return; }
+      setCreatedAdminPassword(data.temporaryPassword);
+      setAdminMessage({ type: 'success', text: 'Administrador criado. Copie a senha inicial agora.' });
+      setAdminForm({ name: '', email: '', phone: '', password: '', autoGeneratePassword: true });
+      void fetchAdmins();
+    } catch { setAdminMessage({ type: 'error', text: 'Erro de conexão ao criar administrador.' }); }
+    finally { setAdminSaving(false); }
+  };
+
+  const handleAdminStatus = async (admin: any) => {
+    const nextStatus = admin.status === 'ACTIVE' ? 'BLOCKED' : 'ACTIVE';
+    const res = await fetch(`/api/admin/admins/${admin.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: nextStatus }) });
+    const data = await res.json();
+    setAdminMessage({ type: res.ok ? 'success' : 'error', text: data.message || data.error || 'Não foi possível atualizar o administrador.' });
+    if (res.ok) void fetchAdmins();
+  };
+
+  const handleAdminReset = async (admin: any) => {
+    const res = await fetch(`/api/admin/admins/${admin.id}/reset-password`, { method: 'POST' });
+    const data = await res.json();
+    setAdminMessage({ type: res.ok ? 'success' : 'error', text: res.ok ? `Nova senha de ${admin.name}: ${data.temporaryPassword}` : (data.error || 'Não foi possível redefinir a senha.') });
+  };
+
+  const handleSmtpTest = async () => {
+    if (!settings) return;
+    setSaving(true); setSavedSuccess(false);
+    try {
+      const res = await fetch('/api/admin/settings/smtp/test', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { setAdminMessage({ type: 'error', text: data.error || 'Falha no teste SMTP.' }); return; }
+      setAdminMessage({ type: 'success', text: data.message });
+      setSettings({ ...settings, smtp: { ...settings.smtp, lastTestAt: data.lastTestAt, lastTestStatus: 'SUCCESS' } });
+    } catch { setAdminMessage({ type: 'error', text: 'Erro de conexão ao testar SMTP.' }); }
+    finally { setSaving(false); }
   };
 
   if (loading) {
@@ -77,6 +136,13 @@ export const AdminSettingsView: React.FC = () => {
         <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-2xl text-xs font-semibold flex items-center gap-2.5">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span>Configurações salvas e aplicadas com sucesso em todo o sistema!</span>
+        </div>
+      )}
+
+      {adminMessage && (
+        <div className={`p-4 rounded-2xl text-xs font-semibold flex items-center gap-2.5 ${adminMessage.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}`}>
+          {adminMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+          <span>{adminMessage.text}</span>
         </div>
       )}
 
@@ -144,8 +210,8 @@ export const AdminSettingsView: React.FC = () => {
                 type="number"
                 min="1"
                 max="60"
-                value={settings.defaultAccessDurationMonths}
-                onChange={e => setSettings({ ...settings, defaultAccessDurationMonths: parseInt(e.target.value) || 12 })}
+                value={settings.defaultAccessMonths}
+                onChange={e => setSettings({ ...settings, defaultAccessMonths: parseInt(e.target.value) || 12 })}
                 className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100 focus:outline-none focus:border-amber-500"
               />
               <p className="text-[10px] text-neutral-500">Padrão aplicado no cadastro de alunos (12 meses).</p>
@@ -214,6 +280,30 @@ export const AdminSettingsView: React.FC = () => {
         </div>
 
         {/* 4. Notice Banner */}
+        {settings.smtp && (
+          <div className="bg-neutral-900/60 border border-neutral-800 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2"><Send className="w-4 h-4 text-amber-400" /> Configuração de E-mail SMTP</h2>
+              <span className={`text-[10px] font-semibold px-2 py-1 rounded-lg border ${settings.smtp.passwordConfigured ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-neutral-400 bg-neutral-800 border-neutral-700'}`}>
+                {settings.smtp.passwordConfigured ? 'SMTP CONFIGURADO' : 'SMTP NÃO CONFIGURADO'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              <input value={settings.smtp.host} onChange={e => setSettings({ ...settings, smtp: { ...settings.smtp, host: e.target.value } })} placeholder="Servidor SMTP" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input type="number" value={settings.smtp.port} onChange={e => setSettings({ ...settings, smtp: { ...settings.smtp, port: parseInt(e.target.value) || 587 } })} placeholder="Porta" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input value={settings.smtp.username} onChange={e => setSettings({ ...settings, smtp: { ...settings.smtp, username: e.target.value } })} placeholder="Usuário SMTP" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input type="password" value={settings.smtpPassword || ''} onChange={e => setSettings({ ...settings, smtpPassword: e.target.value })} placeholder={settings.smtp.passwordConfigured ? 'Senha atual preservada (digite para trocar)' : 'Senha SMTP'} className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input value={settings.smtp.from} onChange={e => setSettings({ ...settings, smtp: { ...settings.smtp, from: e.target.value } })} placeholder="Remetente" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100 sm:col-span-2" />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-neutral-300"><input type="checkbox" checked={settings.smtp.secure} onChange={e => setSettings({ ...settings, smtp: { ...settings.smtp, secure: e.target.checked } })} className="rounded accent-amber-500" /> Usar conexão segura (SSL/TLS, normalmente porta 465)</label>
+            <div className="flex flex-wrap items-center gap-3">
+              <button type="button" onClick={handleSmtpTest} disabled={saving} className="flex items-center gap-2 px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-semibold"><Send className="w-3.5 h-3.5" /> Testar SMTP</button>
+              {settings.smtp.lastTestAt && <span className={`text-[10px] ${settings.smtp.lastTestStatus === 'SUCCESS' ? 'text-emerald-400' : 'text-rose-400'}`}>Último teste: {new Date(settings.smtp.lastTestAt).toLocaleString('pt-BR')}</span>}
+            </div>
+            <p className="text-[10px] text-neutral-500">O teste envia uma mensagem para o e-mail de suporte configurado acima. A senha nunca é exibida nem devolvida pela API.</p>
+          </div>
+        )}
+
         <div className="bg-neutral-900/60 border border-neutral-800 rounded-3xl p-6 space-y-4">
           <h2 className="text-sm font-bold text-white flex items-center gap-2">
             <Bell className="w-4 h-4 text-amber-400" />
@@ -231,6 +321,29 @@ export const AdminSettingsView: React.FC = () => {
             />
           </div>
         </div>
+
+        {user?.role === 'SUPER_ADMIN' && (
+          <div className="bg-neutral-900/60 border border-neutral-800 rounded-3xl p-6 space-y-5">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2"><Users className="w-4 h-4 text-amber-400" /> Administradores do Sistema</h2>
+            <div className="space-y-2">
+              {admins.map(admin => (
+                <div key={admin.id} className="flex flex-wrap items-center justify-between gap-3 p-3 bg-neutral-950 rounded-xl border border-neutral-800 text-xs">
+                  <div><p className="font-semibold text-white">{admin.name} {admin.role === 'SUPER_ADMIN' && <span className="text-amber-400">(Super)</span>}</p><p className="text-neutral-500">{admin.email}</p></div>
+                  <div className="flex items-center gap-2"><span className={admin.status === 'ACTIVE' ? 'text-emerald-400' : 'text-rose-400'}>{admin.status === 'ACTIVE' ? 'Ativo' : 'Bloqueado'}</span>{admin.role !== 'SUPER_ADMIN' && <><button type="button" onClick={() => void handleAdminStatus(admin)} className="px-2 py-1 rounded-lg bg-neutral-800 text-neutral-300">{admin.status === 'ACTIVE' ? 'Bloquear' : 'Ativar'}</button><button type="button" onClick={() => void handleAdminReset(admin)} className="p-1.5 rounded-lg bg-neutral-800 text-amber-300" title="Redefinir senha"><KeyRound className="w-3.5 h-3.5" /></button></>}</div>
+                </div>
+              ))}
+            </div>
+            <form onSubmit={handleCreateAdmin} className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs border-t border-neutral-800 pt-5">
+              <input required value={adminForm.name} onChange={e => setAdminForm({ ...adminForm, name: e.target.value })} placeholder="Nome do administrador" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input required type="email" value={adminForm.email} onChange={e => setAdminForm({ ...adminForm, email: e.target.value })} placeholder="E-mail" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input value={adminForm.phone} onChange={e => setAdminForm({ ...adminForm, phone: e.target.value })} placeholder="Telefone (opcional)" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              {!adminForm.autoGeneratePassword && <input required minLength={8} type="password" value={adminForm.password} onChange={e => setAdminForm({ ...adminForm, password: e.target.value })} placeholder="Senha inicial" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />}
+              <label className="flex items-center gap-2 text-neutral-300"><input type="checkbox" checked={adminForm.autoGeneratePassword} onChange={e => setAdminForm({ ...adminForm, autoGeneratePassword: e.target.checked })} className="rounded accent-amber-500" /> Gerar senha automaticamente</label>
+              <button disabled={adminSaving} type="submit" className="flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-500 text-neutral-950 rounded-xl font-bold uppercase"><UserPlus className="w-3.5 h-3.5" /> {adminSaving ? 'Criando...' : 'Cadastrar administrador'}</button>
+              {createdAdminPassword && <p className="sm:col-span-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300">Senha inicial: <strong className="font-mono">{createdAdminPassword}</strong> — copie agora; ela não será exibida novamente.</p>}
+            </form>
+          </div>
+        )}
 
         {/* Submit */}
         <div className="flex justify-end">

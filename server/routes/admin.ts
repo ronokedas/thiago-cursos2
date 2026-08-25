@@ -6,7 +6,8 @@ import fs from 'fs';
 import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR } from '../db.js';
 import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
 import { logAudit } from '../audit.js';
-import { sendWelcomeEmail } from '../email.js';
+import { sendSmtpTestEmail, sendWelcomeEmail } from '../email.js';
+import { encryptSecret } from '../secrets.js';
 
 export const adminRouter = Router();
 
@@ -27,6 +28,19 @@ function isValidCpf(value: string): boolean {
   digit = (sum * 10) % 11;
   if (digit === 10) digit = 0;
   return digit === Number(value[10]);
+}
+
+function requireSuperAdmin(req: Request & { auth?: any }, res: Response): boolean {
+  if (req.auth?.user?.role !== 'SUPER_ADMIN') {
+    res.status(403).json({ error: 'Somente o super administrador pode executar esta operação.' });
+    return false;
+  }
+  return true;
+}
+
+function publicUser(user: User) {
+  const { passwordHash: _passwordHash, ...safe } = user;
+  return safe;
 }
 
 // Require admin authentication for all routes
@@ -180,6 +194,91 @@ adminRouter.get('/users', (req: Request, res: Response): void => {
       totalPages: Math.ceil(totalCount / limitNum),
     },
   });
+});
+
+// GET /api/admin/admins
+adminRouter.get('/admins', (req: Request & { auth?: any }, res: Response): void => {
+  if (!requireSuperAdmin(req, res)) return;
+  const db = readDb();
+  res.json({ admins: db.users.filter(user => user.role === 'SUPER_ADMIN' || user.role === 'ADMIN').map(publicUser) });
+});
+
+// POST /api/admin/admins
+adminRouter.post('/admins', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  if (!requireSuperAdmin(req, res)) return;
+  const { name, email, phone, password, autoGeneratePassword = true, status = 'ACTIVE' } = req.body;
+  if (!name || !email) { res.status(400).json({ error: 'Nome e e-mail são obrigatórios.' }); return; }
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedPhone = onlyDigits(phone);
+  if (normalizedPhone && ![10, 11].includes(normalizedPhone.length)) { res.status(400).json({ error: 'Telefone inválido. Informe DDD e número.' }); return; }
+  const db = readDb();
+  if (db.users.some(user => user.email.toLowerCase() === normalizedEmail)) { res.status(409).json({ error: 'Já existe um usuário cadastrado com este e-mail.' }); return; }
+  let finalPassword = String(password || '');
+  if (autoGeneratePassword || !finalPassword) finalPassword = generateRandomPassword(12);
+  if (finalPassword.length < 8) { res.status(400).json({ error: 'A senha deve ter no mínimo 8 caracteres.' }); return; }
+  const now = new Date();
+  const newAdmin: User = {
+    id: `usr_${crypto.randomUUID()}`,
+    name: String(name).trim(), email: normalizedEmail, phone: normalizedPhone || undefined,
+    passwordHash: hashPassword(finalPassword), role: 'ADMIN', status: status === 'BLOCKED' ? 'BLOCKED' : 'ACTIVE',
+    startDate: now.toISOString(), expirationDate: '2099-12-31T23:59:59.999Z', firstAccessAt: null, lastAccessAt: null,
+    forcePasswordChange: true, createdAt: now.toISOString(), updatedAt: now.toISOString(),
+  };
+  db.users.push(newAdmin);
+  await writeDbAndWait(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'CREATE_ADMIN', entityType: 'USER', entityId: newAdmin.id, details: { name: newAdmin.name, email: newAdmin.email } });
+  void sendWelcomeEmail(newAdmin.email, newAdmin.name, finalPassword).catch(error => console.error('Falha ao enviar e-mail de boas-vindas do admin:', error));
+  res.status(201).json({ message: 'Administrador criado com sucesso.', admin: publicUser(newAdmin), temporaryPassword: finalPassword });
+});
+
+// PUT /api/admin/admins/:id
+adminRouter.put('/admins/:id', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  if (!requireSuperAdmin(req, res)) return;
+  const db = readDb();
+  const admin = db.users.find(user => user.id === req.params.id && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN'));
+  if (!admin) { res.status(404).json({ error: 'Administrador não encontrado.' }); return; }
+  const { name, email, phone, status } = req.body;
+  if (admin.role === 'SUPER_ADMIN' && status === 'BLOCKED') { res.status(400).json({ error: 'O último super administrador não pode ser bloqueado.' }); return; }
+  if (email !== undefined) {
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (db.users.some(user => user.id !== admin.id && user.email.toLowerCase() === normalizedEmail)) { res.status(409).json({ error: 'Já existe um usuário cadastrado com este e-mail.' }); return; }
+    admin.email = normalizedEmail;
+  }
+  if (name !== undefined) admin.name = String(name).trim();
+  if (phone !== undefined) admin.phone = onlyDigits(phone) || undefined;
+  if (status !== undefined && ['ACTIVE', 'BLOCKED'].includes(status)) admin.status = status;
+  admin.updatedAt = new Date().toISOString();
+  await writeDbAndWait(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'UPDATE_ADMIN', entityType: 'USER', entityId: admin.id, details: { name: admin.name, email: admin.email, status: admin.status } });
+  res.json({ message: 'Administrador atualizado com sucesso.', admin: publicUser(admin) });
+});
+
+// POST /api/admin/admins/:id/reset-password
+adminRouter.post('/admins/:id/reset-password', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  if (!requireSuperAdmin(req, res)) return;
+  const db = readDb();
+  const admin = db.users.find(user => user.id === req.params.id && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN'));
+  if (!admin) { res.status(404).json({ error: 'Administrador não encontrado.' }); return; }
+  const password = generateRandomPassword(12);
+  admin.passwordHash = hashPassword(password); admin.forcePasswordChange = true; admin.updatedAt = new Date().toISOString();
+  for (const session of db.sessions.filter(item => item.userId === admin.id && item.isActive)) { session.isActive = false; session.revokedAt = new Date().toISOString(); session.revokedReason = 'SENHA_REDEFINIDA_PELO_SUPER_ADMIN'; }
+  await writeDbAndWait(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'RESET_ADMIN_PASSWORD', entityType: 'USER', entityId: admin.id });
+  void sendWelcomeEmail(admin.email, admin.name, password).catch(error => console.error('Falha ao enviar reset do admin:', error));
+  res.json({ message: 'Senha redefinida com sucesso.', temporaryPassword: password });
+});
+
+// POST /api/admin/admins/:id/revoke-session
+adminRouter.post('/admins/:id/revoke-session', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  if (!requireSuperAdmin(req, res)) return;
+  const db = readDb();
+  const admin = db.users.find(user => user.id === req.params.id && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN'));
+  if (!admin) { res.status(404).json({ error: 'Administrador não encontrado.' }); return; }
+  let count = 0;
+  for (const session of db.sessions.filter(item => item.userId === admin.id && item.isActive)) { session.isActive = false; session.revokedAt = new Date().toISOString(); session.revokedReason = 'REVOGADA_PELO_SUPER_ADMIN'; count++; }
+  await writeDbAndWait(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'REVOKE_ADMIN_SESSION', entityType: 'USER', entityId: admin.id, details: { sessionsClosed: count } });
+  res.json({ message: 'Sessão do administrador revogada.', sessionsClosed: count });
 });
 
 // GET /api/admin/users/:id (student detail)
@@ -1079,18 +1178,35 @@ adminRouter.get('/audit-logs', (req: Request, res: Response): void => {
 // GET /api/admin/settings
 adminRouter.get('/settings', (req: Request, res: Response): void => {
   const db = readDb();
-  res.json({ settings: db.systemSettings });
+  const smtp = db.systemSettings.smtp || {
+    host: process.env.SMTP_HOST || '', port: Number(process.env.SMTP_PORT || 587), secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true', username: process.env.SMTP_USER || '', from: process.env.SMTP_FROM || 'Mentoria A Mecânica <no-reply@localhost>', passwordConfigured: Boolean(process.env.SMTP_PASSWORD),
+  };
+  const { encryptedPassword: _encryptedPassword, ...safeSmtp } = smtp;
+  res.json({ settings: { ...db.systemSettings, smtp: { ...safeSmtp, passwordConfigured: Boolean(smtp.encryptedPassword || process.env.SMTP_PASSWORD) } } });
 });
 
 // PUT /api/admin/settings
-adminRouter.put('/settings', (req: Request & { auth?: any }, res: Response): void => {
+adminRouter.put('/settings', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
   const db = readDb();
+  const { smtp, ...generalSettings } = req.body || {};
+  if (smtp && !requireSuperAdmin(req, res)) return;
   db.systemSettings = {
     ...db.systemSettings,
-    ...req.body,
+    ...generalSettings,
     id: 'settings-default',
   };
-  writeDb(db);
+  if (smtp) {
+    const previous = db.systemSettings.smtp || { host: '', port: 587, secure: false, username: '', from: '', passwordConfigured: false };
+    const nextPassword = String(smtp.password || '');
+    db.systemSettings.smtp = {
+      host: String(smtp.host || '').trim(), port: Number(smtp.port) || 587, secure: Boolean(smtp.secure), username: String(smtp.username || '').trim(), from: String(smtp.from || '').trim(),
+      encryptedPassword: nextPassword ? encryptSecret(nextPassword) : previous.encryptedPassword,
+      passwordConfigured: Boolean(nextPassword || previous.encryptedPassword || process.env.SMTP_PASSWORD),
+      lastTestAt: nextPassword || JSON.stringify(smtp) !== JSON.stringify(previous) ? undefined : previous.lastTestAt,
+      lastTestStatus: nextPassword || JSON.stringify(smtp) !== JSON.stringify(previous) ? undefined : previous.lastTestStatus,
+    };
+  }
+  await writeDbAndWait(db);
 
   logAudit({
     actorId: req.auth.user.id,
@@ -1099,8 +1215,29 @@ adminRouter.put('/settings', (req: Request & { auth?: any }, res: Response): voi
     action: 'UPDATE_SETTINGS',
     entityType: 'SETTINGS',
     entityId: 'settings-default',
-    details: req.body,
+    details: { generalSettingsUpdated: Object.keys(generalSettings), smtpUpdated: Boolean(smtp) },
   });
 
-  res.json({ message: 'Configurações atualizadas com sucesso.', settings: db.systemSettings });
+  const { encryptedPassword: _encryptedPassword, ...safeSmtp } = db.systemSettings.smtp || {};
+  res.json({ message: 'Configurações atualizadas com sucesso.', settings: { ...db.systemSettings, smtp: { ...safeSmtp, passwordConfigured: Boolean(db.systemSettings.smtp?.encryptedPassword || process.env.SMTP_PASSWORD) } } });
+});
+
+// POST /api/admin/settings/smtp/test
+adminRouter.post('/settings/smtp/test', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  if (!requireSuperAdmin(req, res)) return;
+  const db = readDb();
+  const recipient = db.systemSettings.supportEmail;
+  if (!recipient) { res.status(400).json({ error: 'Configure o e-mail de suporte antes de testar o SMTP.' }); return; }
+  try {
+    await sendSmtpTestEmail(recipient);
+    db.systemSettings.smtp = { ...db.systemSettings.smtp, lastTestAt: new Date().toISOString(), lastTestStatus: 'SUCCESS' };
+    await writeDbAndWait(db);
+    logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'SMTP_TEST_SUCCESS', entityType: 'SETTINGS', entityId: 'settings-default' });
+    res.json({ message: `E-mail de teste enviado para ${recipient}.`, lastTestAt: db.systemSettings.smtp.lastTestAt });
+  } catch (error) {
+    db.systemSettings.smtp = { ...db.systemSettings.smtp, lastTestAt: new Date().toISOString(), lastTestStatus: 'FAILED' };
+    await writeDbAndWait(db);
+    logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'SMTP_TEST_FAILED', entityType: 'SETTINGS', entityId: 'settings-default' });
+    res.status(502).json({ error: error instanceof Error ? error.message : 'Não foi possível validar o SMTP.' });
+  }
 });

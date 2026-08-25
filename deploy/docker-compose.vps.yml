@@ -11,6 +11,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file: ../.env
+    environment:
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY must be set}
     depends_on:
       postgres:
         condition: service_healthy
