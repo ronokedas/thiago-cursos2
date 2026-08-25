@@ -19,22 +19,22 @@ Em SSL/TLS → Overview selecione Full (strict). Não use Flexible.
 Use Ubuntu 22.04 ou 24.04, com pelo menos 2 vCPUs, 4 GB de RAM e espaço suficiente para os vídeos.
 
 ~~~
-ssh root@IP_DO_VPS
-apt update && apt upgrade -y
-apt install -y ca-certificates curl gnupg git ufw unattended-upgrades openssl
+ssh USUARIO_DA_VPS@IP_DO_VPS
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y ca-certificates curl gnupg git ufw unattended-upgrades openssl
 ~~~
 
 ## 3. Instalar Docker
 
 ~~~
-apt remove -y docker.io docker-compose docker-doc podman-docker containerd runc || true
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \${VERSION_CODENAME}) stable" > /etc/apt/sources.list.d/docker.list
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-systemctl enable --now docker
+sudo apt remove -y docker.io docker-compose docker-doc podman-docker containerd runc || true
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo ${VERSION_CODENAME}) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
 docker --version
 docker compose version
 ~~~
@@ -42,11 +42,11 @@ docker compose version
 ## 4. Firewall
 
 ~~~
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw --force enable
-ufw status verbose
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw --force enable
+sudo ufw status verbose
 ~~~
 
 Não abra as portas 3000 e 5432. O app fica em 127.0.0.1:3000 e o PostgreSQL somente dentro da rede Docker.
@@ -54,9 +54,9 @@ Não abra as portas 3000 e 5432. O app fica em 127.0.0.1:3000 e o PostgreSQL som
 ## 5. Clonar o projeto
 
 ~~~
-mkdir -p /opt
-cd /opt
-git clone https://github.com/ronokedas/thiago-cursos2.git aulas-online
+sudo mkdir -p /opt/aulas-online
+sudo chown -R "$USER":"$USER" /opt/aulas-online
+git clone https://github.com/ronokedas/thiago-cursos2.git /opt/aulas-online
 cd /opt/aulas-online
 git switch main
 git log -1 --oneline
@@ -113,18 +113,18 @@ No Cloudflare, abra SSL/TLS → Origin Server → Create Certificate. Selecione 
 No VPS, salve o certificado e a chave:
 
 ~~~
-mkdir -p /etc/ssl/cloudflare/thiago-trader
-nano /etc/ssl/cloudflare/thiago-trader/origin.pem
-chmod 644 /etc/ssl/cloudflare/thiago-trader/origin.pem
-nano /etc/ssl/cloudflare/thiago-trader/origin.key
-chmod 600 /etc/ssl/cloudflare/thiago-trader/origin.key
+sudo mkdir -p /etc/ssl/cloudflare/thiago-trader
+sudo nano /etc/ssl/cloudflare/thiago-trader/origin.pem
+sudo chmod 644 /etc/ssl/cloudflare/thiago-trader/origin.pem
+sudo nano /etc/ssl/cloudflare/thiago-trader/origin.key
+sudo chmod 600 /etc/ssl/cloudflare/thiago-trader/origin.key
 ~~~
 
 Instale o Nginx:
 
 ~~~
-apt install -y nginx
-nano /etc/nginx/sites-available/thiago-trader
+sudo apt install -y nginx
+sudo nano /etc/nginx/sites-available/thiago-trader
 ~~~
 
 Cole:
@@ -164,11 +164,11 @@ server {
 Ative o site:
 
 ~~~
-ln -s /etc/nginx/sites-available/thiago-trader /etc/nginx/sites-enabled/thiago-trader
-rm -f /etc/nginx/sites-enabled/default
-nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
+sudo ln -s /etc/nginx/sites-available/thiago-trader /etc/nginx/sites-enabled/thiago-trader
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
 ~~~
 
 ## 8. Subir a aplicação
