@@ -51,6 +51,22 @@ sudo ufw status verbose
 
 Não abra as portas 3000 e 5432. O app fica em 127.0.0.1:3000 e o PostgreSQL somente dentro da rede Docker.
 
+### Firewall da Google Cloud
+
+Além do UFW, a regra de rede da Google Cloud precisa permitir TCP na porta 80.
+No Console Google Cloud, abra **VPC network → Firewall → Create firewall rule**
+e configure:
+
+- Name: `allow-http-thiago`
+- Direction: `Ingress`
+- Action: `Allow`
+- Targets: todas as instâncias da rede, ou a tag de rede da VM
+- Source IPv4 ranges: `0.0.0.0/0`
+- Protocols and ports: `tcp:80`
+
+Salve a regra e confirme que ela se aplica à VM `thiagocursos-20260825-212701`.
+No modo Cloudflare Flexible, a porta 80 é a única porta de origem necessária.
+
 ## 5. Clonar o projeto
 
 ~~~
