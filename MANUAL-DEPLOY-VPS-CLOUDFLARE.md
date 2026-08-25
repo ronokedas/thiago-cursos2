@@ -36,8 +36,8 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
-docker --version
-docker compose version
+sudo docker --version
+sudo docker compose version
 ~~~
 
 ## 4. Firewall
@@ -159,8 +159,8 @@ O parâmetro --env-file é necessário para o Compose interpolar corretamente o 
 
 ~~~
 cd /opt/aulas-online
-docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build -d
-docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build -d
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
 curl -I https://thiago-trader.4dtech.com.br
 ~~~
 
@@ -172,27 +172,27 @@ Faça backup antes de atualizar:
 
 ~~~
 cd /opt/aulas-online
-bash ./scripts/backup.sh
+sudo bash ./scripts/backup.sh
 git fetch origin
 git switch main
 git pull --ff-only origin main
-docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build -d
-docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build -d
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
 ~~~
 
-Nunca use docker compose down -v, pois isso pode remover volumes persistentes.
+Nunca use `sudo docker compose down -v`, pois isso pode remover volumes persistentes.
 
 ## 10. Backup diário
 
 ~~~
-mkdir -p /opt/backups
-crontab -e
+sudo mkdir -p /opt/backups
+sudo crontab -e
 ~~~
 
 Adicione:
 
 ~~~
-0 3 * * * cd /opt/aulas-online && bash ./scripts/backup.sh >> /var/log/aulas-online-backup.log 2>&1
+0 3 * * * cd /opt/aulas-online && sudo bash ./scripts/backup.sh >> /var/log/aulas-online-backup.log 2>&1
 ~~~
 
 Copie os backups para outro servidor ou storage e teste periodicamente a restauração com scripts/restore.sh.
@@ -200,10 +200,10 @@ Copie os backups para outro servidor ou storage e teste periodicamente a restaur
 ## 11. Diagnóstico
 
 ~~~
-docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
-docker compose --env-file .env -f deploy/docker-compose.vps.yml logs --tail=200 app
-docker compose --env-file .env -f deploy/docker-compose.vps.yml logs --tail=200 postgres
-journalctl -u nginx --no-pager -n 100
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml logs --tail=200 app
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml logs --tail=200 postgres
+sudo journalctl -u nginx --no-pager -n 100
 df -h
 ~~~
 
