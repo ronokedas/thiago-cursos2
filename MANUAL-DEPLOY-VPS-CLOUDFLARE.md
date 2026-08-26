@@ -213,7 +213,7 @@ diretório; o primeiro `cd` leva até a instalação correta:
 
 ~~~
 cd /opt/aulas-online
-sudo bash ./scripts/backup.sh
+sudo bash ./scripts/backup-full.sh /opt/backups
 sudo git fetch origin
 sudo git switch main
 sudo git pull --ff-only origin main
@@ -245,7 +245,60 @@ domínio. O arquivo `.env` e os volumes de dados não são substituídos pelo
 
 Nunca use `sudo docker compose down -v`, pois isso pode remover volumes persistentes.
 
-## 10. Backup diário
+## 10. Backup completo e mudança de VPS
+
+O backup completo inclui o banco PostgreSQL, administradores, alunos, cursos,
+tópicos, aulas, progresso, auditoria, configurações, PDFs, materiais, vídeos,
+o JSON de compatibilidade e o `.env`. O `.env` contém senhas e a
+`APP_ENCRYPTION_KEY`; o pacote não é criptografado, portanto deve ser tratado
+como arquivo secreto e mantido com permissão `600`.
+
+Na VPS antiga, execute:
+
+~~~
+cd /opt/aulas-online
+sudo bash ./scripts/backup-full.sh /opt/backups
+ls -lh /opt/backups/mentoria-backup-*
+~~~
+
+Baixe para um local seguro o arquivo `.tar.gz` e o arquivo correspondente
+`.tar.gz.sha256`. No SSH do Google Cloud, use o botão de download de arquivo;
+por `scp`, use:
+
+~~~
+scp usuario@IP_DA_VPS:/opt/backups/mentoria-backup-DATA.tar.gz .
+scp usuario@IP_DA_VPS:/opt/backups/mentoria-backup-DATA.tar.gz.sha256 .
+~~~
+
+Na VPS nova, instale o sistema normalmente, clone a branch `main` e crie o
+`.env` inicial para que o Docker consiga subir. Depois envie o pacote para a
+VPS nova:
+
+~~~
+sudo mkdir -p /opt/backups
+sudo chown -R "$USER":"$USER" /opt/backups
+scp mentoria-backup-DATA.tar.gz usuario@IP_NOVA_VPS:/opt/backups/
+scp mentoria-backup-DATA.tar.gz.sha256 usuario@IP_NOVA_VPS:/opt/backups/
+~~~
+
+Na nova VPS, restaure com:
+
+~~~
+cd /opt/aulas-online
+sudo bash ./scripts/restore-full.sh /opt/backups/mentoria-backup-DATA.tar.gz
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
+curl -I http://127.0.0.1:3000
+~~~
+
+O script valida o checksum, preserva o `.env` anterior, restaura o banco e os
+volumes pelo serviço `app`, reconstrói os containers e verifica o healthcheck.
+Ele não depende do nome físico dos volumes Docker e não usa `down -v`.
+
+Depois da restauração, configure o Nginx, gere um novo certificado Origin no
+Cloudflare, aponte o DNS para o novo IP e valide login, alunos, vídeos, PDFs,
+progresso e SMTP. O certificado privado da VPS antiga não é incluído no backup.
+
+## 11. Backup diário
 
 ~~~
 sudo mkdir -p /opt/backups
@@ -255,12 +308,12 @@ sudo crontab -e
 Adicione:
 
 ~~~
-0 3 * * * cd /opt/aulas-online && sudo bash ./scripts/backup.sh >> /var/log/aulas-online-backup.log 2>&1
+0 3 * * * cd /opt/aulas-online && sudo bash ./scripts/backup-full.sh /opt/backups >> /var/log/aulas-online-backup.log 2>&1
 ~~~
 
 Copie os backups para outro servidor ou storage e teste periodicamente a restauração com scripts/restore.sh.
 
-## 11. Diagnóstico
+## 12. Diagnóstico
 
 ~~~
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
@@ -274,7 +327,7 @@ df -h
 - PostgreSQL: confira POSTGRES_PASSWORD e DATABASE_URL; um volume existente mantém a senha inicial.
 - Upload: confirme client_max_body_size 1G e espaço livre.
 
-## 12. Checklist final
+## 13. Checklist final
 
 - [ ] DNS aponta para o VPS e está proxied.
 - [ ] Cloudflare está em Full (strict).

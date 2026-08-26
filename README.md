@@ -52,13 +52,13 @@ no painel, as variáveis `SMTP_*` do `.env` continuam sendo usadas.
 Backups of the database and private videos:
 
 ```powershell
-./scripts/backup.ps1
+sudo bash ./scripts/backup-full.sh /opt/backups
 ```
 
 Restore with:
 
 ```powershell
-./scripts/restore.ps1 -DatabaseDump ./backups/mecanica-YYYYMMDD-HHMMSS.sql -VideosArchive ./backups/videos-YYYYMMDD-HHMMSS.tar.gz
+sudo bash ./scripts/restore-full.sh /opt/backups/mentoria-backup-DATA.tar.gz
 ```
 
 Smoke test do ambiente em execução:

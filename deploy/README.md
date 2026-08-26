@@ -26,11 +26,16 @@ docker compose -f deploy/docker-compose.vps.yml up --build -d
 8. Configure a renovação automática do Certbot e execute o backup diário:
 
 ```bash
-pwsh ./scripts/backup.ps1
+sudo bash ./scripts/backup-full.sh /opt/backups
 ```
 
-O backup inclui PostgreSQL e vídeos. Teste a restauração em uma máquina
-separada com `scripts/restore.ps1` antes de liberar o sistema para alunos.
+O backup completo inclui PostgreSQL, usuários, conteúdo, progresso, PDFs,
+materiais, vídeos, configurações e `.env`. Teste a restauração em uma máquina
+separada com:
+
+```bash
+sudo bash ./scripts/restore-full.sh /opt/backups/mentoria-backup-DATA.tar.gz
+```
 
 Depois do primeiro login, troque a senha inicial do `SUPER_ADMIN`. Preserve o
 segredo `APP_ENCRYPTION_KEY`: sem ele, senhas SMTP já cifradas não podem ser
