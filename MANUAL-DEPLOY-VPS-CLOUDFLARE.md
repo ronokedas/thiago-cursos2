@@ -415,3 +415,34 @@ df -h
 - [ ] SMTP foi testado em Configurações.
 - [ ] Upload, streaming e progresso funcionam.
 - [ ] Backup e restauração foram testados.
+
+## 15. Mídias complementares por aula
+
+No painel **Cursos & Vídeos**, crie ou edite a aula. Além do vídeo principal, use
+**Vídeos curtos — Operando na prática** para enviar quantos clipes MP4 forem
+necessários e **Exercícios de imagem** para cada par de imagem sem correção e
+imagem com correção.
+
+- A imagem sem correção fica disponível para download desde o início da aula.
+- Vídeos práticos e imagens com correção só são liberados quando o aluno chega
+  ao término real do vídeo principal; marcar a aula como concluída ou atingir
+  90% não libera esse material.
+- Arquivos continuam privados nos volumes Docker e são incluídos no backup
+  completo. Não exponha `/app/data` pelo Nginx.
+- Após atualizar o sistema, mantenha a regra Cloudflare de **Bypass cache** para
+  `/api/stream/*`; ela é indispensável para os tickets protegidos dos clipes.
+- A imagem corrigida é mostrada sem botão de download e com marca d'água. Isso
+  reduz vazamentos, mas nenhuma aplicação web consegue impedir capturas de tela.
+
+
+cd /opt/aulas-online
+
+sudo bash ./scripts/backup-full.sh /opt/backups
+
+sudo git fetch origin
+sudo git switch main
+sudo git pull --ff-only origin main
+
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build -d
+
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps

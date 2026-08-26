@@ -34,6 +34,8 @@ export const AdminCoursesView: React.FC = () => {
   const [lessonDuration, setLessonDuration] = useState(600);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [materialFile, setMaterialFile] = useState<File | null>(null);
+  const [practicalDrafts, setPracticalDrafts] = useState<Array<{ title: string; description: string; file: File | null }>>([]);
+  const [imageDrafts, setImageDrafts] = useState<Array<{ title: string; description: string; original: File | null; corrected: File | null }>>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadBytes, setUploadBytes] = useState({ loaded: 0, total: 0 });
@@ -225,12 +227,28 @@ export const AdminCoursesView: React.FC = () => {
         }
       }
 
+      // 4. Complementary media is persisted sequentially after the lesson ID
+      // exists, so a failed file never prevents the lesson itself from being saved.
+      if (savedLessonId) {
+        for (const draft of practicalDrafts.filter(item => item.file)) {
+          const form = new FormData(); form.append('title', draft.title || draft.file!.name); form.append('description', draft.description); form.append('video', draft.file!);
+          setUploadStatus(`Enviando vídeo prático: ${draft.title || draft.file!.name}`);
+          const response = await fetch(`/api/admin/lessons/${savedLessonId}/practical-videos`, { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'A aula foi salva, mas um vídeo prático falhou.');
+        }
+        for (const draft of imageDrafts.filter(item => item.original)) {
+          const form = new FormData(); form.append('title', draft.title || draft.original!.name); form.append('description', draft.description); form.append('original', draft.original!); if (draft.corrected) form.append('corrected', draft.corrected);
+          setUploadStatus(`Enviando exercício: ${draft.title || draft.original!.name}`);
+          const response = await fetch(`/api/admin/lessons/${savedLessonId}/image-exercises`, { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'A aula foi salva, mas um exercício de imagens falhou.');
+        }
+      }
+
       setUploadStatus(materialFile ? 'Enviando material complementar...' : 'Vídeo pronto para reprodução.');
       setUploadProgress(100);
       setLessonModalOpen(false);
       setEditingLessonId(null);
       setVideoFile(null);
       setMaterialFile(null);
+      setPracticalDrafts([]); setImageDrafts([]);
       setLessonTitle('');
       setLessonDesc('');
       fetchTree();
@@ -623,6 +641,18 @@ export const AdminCoursesView: React.FC = () => {
                 <p className="text-[10px] text-neutral-500">
                   O arquivo ficará privado e será disponibilizado para download apenas aos alunos autorizados (limite de 25 MB).
                 </p>
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950/50 p-3">
+                <div className="flex items-center justify-between"><label className="font-semibold text-neutral-300">Vídeos curtos — Operando na prática</label><button type="button" onClick={() => setPracticalDrafts(items => [...items, { title: '', description: '', file: null }])} className="text-amber-400 font-bold">+ Adicionar</button></div>
+                {editingLesson?.practicalVideos?.map(video => <p key={video.id} className="text-[10px] text-emerald-400">Vídeo atual: {video.title}</p>)}
+                {practicalDrafts.map((draft, index) => <div key={index} className="grid grid-cols-1 gap-2 border-t border-neutral-800 pt-2"><input value={draft.title} onChange={e => setPracticalDrafts(items => items.map((item, i) => i === index ? { ...item, title: e.target.value } : item))} placeholder="Título do vídeo prático" className="rounded-lg border border-neutral-800 bg-black px-2 py-2 text-neutral-100" /><input type="file" accept="video/mp4,.mp4" onChange={e => setPracticalDrafts(items => items.map((item, i) => i === index ? { ...item, file: e.target.files?.[0] || null } : item))} className="text-[10px] text-neutral-400" /><button type="button" onClick={() => setPracticalDrafts(items => items.filter((_, i) => i !== index))} className="text-left text-[10px] text-rose-400">Remover</button></div>)}
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950/50 p-3">
+                <div className="flex items-center justify-between"><label className="font-semibold text-neutral-300">Exercícios de imagem</label><button type="button" onClick={() => setImageDrafts(items => [...items, { title: '', description: '', original: null, corrected: null }])} className="text-amber-400 font-bold">+ Adicionar</button></div>
+                {editingLesson?.imageExercises?.map(exercise => <p key={exercise.id} className="text-[10px] text-emerald-400">Exercício atual: {exercise.title}</p>)}
+                {imageDrafts.map((draft, index) => <div key={index} className="grid grid-cols-1 gap-2 border-t border-neutral-800 pt-2"><input value={draft.title} onChange={e => setImageDrafts(items => items.map((item, i) => i === index ? { ...item, title: e.target.value } : item))} placeholder="Título do exercício" className="rounded-lg border border-neutral-800 bg-black px-2 py-2 text-neutral-100" /><label className="text-[10px] text-neutral-400">Imagem sem correção (obrigatória)<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setImageDrafts(items => items.map((item, i) => i === index ? { ...item, original: e.target.files?.[0] || null } : item))} className="block text-[10px]" /></label><label className="text-[10px] text-neutral-400">Imagem com correção (opcional)<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setImageDrafts(items => items.map((item, i) => i === index ? { ...item, corrected: e.target.files?.[0] || null } : item))} className="block text-[10px]" /></label><button type="button" onClick={() => setImageDrafts(items => items.filter((_, i) => i !== index))} className="text-left text-[10px] text-rose-400">Remover</button></div>)}
               </div>
 
               {lessonError && (

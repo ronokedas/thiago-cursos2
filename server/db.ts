@@ -91,11 +91,41 @@ export interface Lesson {
   videoProvider: 'LOCAL_SECURE' | 'EXTERNAL_HLS' | 'CLOUDFLARE_STREAM';
   playbackId?: string;
   supplementaryMaterials: SupplementaryMaterial[];
+  practicalVideos?: PracticalVideo[];
+  imageExercises?: ImageExercise[];
   releaseType: 'INHERIT' | 'IMMEDIATE' | 'AFTER_DAYS' | 'FIXED_DATE' | 'MANUAL';
   releaseDays: number;
   releaseDate: string | null;
   isFreePreview: boolean;
   status: 'PUBLISHED' | 'DRAFT';
+}
+
+export interface PracticalVideo {
+  id: string;
+  title: string;
+  description: string;
+  position: number;
+  videoFileName: string;
+  sizeBytes: number;
+  durationSeconds: number;
+  uploadedAt: string;
+}
+
+export interface ImageAsset {
+  storageFileName: string;
+  originalName: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  sizeBytes: number;
+  uploadedAt: string;
+}
+
+export interface ImageExercise {
+  id: string;
+  title: string;
+  description: string;
+  position: number;
+  original: ImageAsset;
+  corrected?: ImageAsset;
 }
 
 export interface UserContentOverride {
@@ -119,6 +149,7 @@ export interface LessonProgress {
   watchedSeconds: number;
   accessCount: number;
   lastWatchedAt: string;
+  mainVideoEndedAt?: string | null;
 }
 
 export interface AuditLog {
@@ -190,6 +221,7 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const VIDEO_DIR = path.join(DATA_DIR, 'videos');
 const MATERIAL_DIR = path.join(DATA_DIR, 'materials');
+const LESSON_MEDIA_DIR = path.join(DATA_DIR, 'lesson-media');
 const UPLOAD_TMP_DIR = path.join(DATA_DIR, 'uploads');
 let databaseCache: DatabaseSchema | null = null;
 
@@ -201,6 +233,7 @@ export function initDatabase(): void {
     fs.mkdirSync(VIDEO_DIR, { recursive: true });
   }
   if (!fs.existsSync(MATERIAL_DIR)) fs.mkdirSync(MATERIAL_DIR, { recursive: true });
+  if (!fs.existsSync(LESSON_MEDIA_DIR)) fs.mkdirSync(LESSON_MEDIA_DIR, { recursive: true });
   if (!fs.existsSync(UPLOAD_TMP_DIR)) fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
   for (const entry of fs.readdirSync(UPLOAD_TMP_DIR)) {
     const filePath = path.join(UPLOAD_TMP_DIR, entry);
@@ -308,6 +341,17 @@ function normalizeDatabase(data: DatabaseSchema): DatabaseSchema {
     telegramHelpMessage: settings.telegramHelpMessage || 'Ficou com alguma dúvida sobre esta aula? Entre no grupo e fale com a equipe.',
     telegramButtonLabel: settings.telegramButtonLabel || 'Entrar no grupo do Telegram',
   };
+  for (const lesson of data.lessons || []) {
+    lesson.practicalVideos = Array.isArray(lesson.practicalVideos) ? lesson.practicalVideos : [];
+    lesson.imageExercises = Array.isArray(lesson.imageExercises) ? lesson.imageExercises : [];
+  }
+  // Students already marked as complete in the previous model keep their
+  // complementary media access after this upgrade.
+  for (const progress of data.lessonProgress || []) {
+    if (progress.isCompleted && progress.mainVideoEndedAt === undefined) {
+      progress.mainVideoEndedAt = progress.lastWatchedAt || new Date().toISOString();
+    }
+  }
   return data;
 }
 
@@ -325,4 +369,4 @@ export async function writeDbAndWait(data: DatabaseSchema): Promise<void> {
   await waitForPostgresPersistence();
 }
 
-export { DATA_DIR, VIDEO_DIR, MATERIAL_DIR, UPLOAD_TMP_DIR, DB_FILE };
+export { DATA_DIR, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, UPLOAD_TMP_DIR, DB_FILE };

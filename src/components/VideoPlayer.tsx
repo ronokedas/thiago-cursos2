@@ -16,6 +16,8 @@ interface VideoPlayerProps {
   onProgressUpdate?: (positionSeconds: number, durationSeconds: number, isCompleted: boolean) => void;
   onLessonCompleted?: () => void;
   onStreamError?: () => void;
+  trackProgress?: boolean;
+  onMainVideoEnded?: (positionSeconds: number, durationSeconds: number) => void;
 }
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -29,6 +31,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onProgressUpdate,
   onLessonCompleted,
   onStreamError,
+  trackProgress = true,
+  onMainVideoEnded,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -152,6 +156,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const saveProgress = useCallback((forceCompleted?: boolean) => {
     const pos = Math.floor(videoRef.current?.currentTime ?? currentTimeRef.current);
     const dur = Math.floor(videoRef.current?.duration || durationRef.current || durationSeconds || 600);
+    if (!trackProgress) return;
     const reachedCompletion = forceCompleted ?? (dur > 0 && (pos / dur) * 100 >= 90);
     if (reachedCompletion && !completedRef.current) {
       completedRef.current = true;
@@ -159,7 +164,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       completedCallbackRef.current?.();
     }
     progressCallbackRef.current?.(pos, dur, reachedCompletion || completedRef.current);
-  }, [durationSeconds]);
+  }, [durationSeconds, trackProgress]);
 
   // Stable interval: state changes from timeupdate no longer reset the five-second save.
   useEffect(() => {
@@ -191,7 +196,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setDuration(dur);
     }
 
-    if ((curr / dur) >= 0.9 && !completedRef.current) saveProgress(true);
+    if (trackProgress && (curr / dur) >= 0.9 && !completedRef.current) saveProgress(true);
   };
 
   const handleLoadedMetadata = () => {
@@ -316,8 +321,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onPlaying={() => setIsBuffering(false)}
           onEnded={() => {
             setIsPlaying(false);
-            setCompletedState(true);
-            saveProgress(true);
+            if (trackProgress) {
+              setCompletedState(true);
+              saveProgress(true);
+              const video = videoRef.current;
+              onMainVideoEnded?.(video?.currentTime || duration, video?.duration || duration);
+            }
           }}
           onError={() => { setStreamError('Não foi possível carregar este vídeo.'); onStreamError?.(); }}
           onClick={togglePlay}
@@ -501,25 +510,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               Acesso exclusivo de <strong className="text-white">{watermark.userName}</strong>. Gravador e compartilhamento rastreados.
             </span>
           </div>
-          {completedState ? (
+          {trackProgress && completedState ? (
             <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full shrink-0">
               <CheckCircle2 className="w-3.5 h-3.5" />
               Concluída (100%)
             </span>
-          ) : (
+          ) : trackProgress ? (
             <span className="text-neutral-400 shrink-0">
               Progresso: <span className="font-semibold text-amber-400">{Math.min(100, Math.round((currentTime / (duration || 1)) * 100))}%</span>
             </span>
-          )}
+          ) : <span className="text-neutral-400 shrink-0">Vídeo complementar</span>}
         </div>
 
-        <div className="bg-amber-600/10 p-4 rounded-2xl border border-amber-500/20 flex items-center justify-between text-xs">
+        {trackProgress && <div className="bg-amber-600/10 p-4 rounded-2xl border border-amber-500/20 flex items-center justify-between text-xs">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
             <span className="text-amber-300 font-medium">Marcador Automático</span>
           </div>
           <span className="text-[11px] text-amber-400/90 font-mono">Conclusão aos 90%</span>
-        </div>
+        </div>}
       </div>
     </div>
   );

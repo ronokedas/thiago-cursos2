@@ -4,7 +4,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
-import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, UPLOAD_TMP_DIR } from '../db.js';
+import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, UPLOAD_TMP_DIR, ImageAsset } from '../db.js';
 import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
 import { logAudit } from '../audit.js';
 import { sendSmtpTestEmail, sendWelcomeEmail } from '../email.js';
@@ -77,6 +77,12 @@ const materialUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+const imageUpload = multer({
+  storage: multer.diskStorage({ destination: (_req, _file, cb) => cb(null, UPLOAD_TMP_DIR), filename: (_req, file, cb) => cb(null, `img_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${path.extname(file.originalname).toLowerCase()}`) }),
+  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)),
+  limits: { fileSize: 15 * 1024 * 1024 },
+});
+
 function removeLessonVideo(lesson: Lesson): void {
   if (!lesson.videoFileName) return;
   const filePath = path.join(VIDEO_DIR, lesson.videoFileName);
@@ -91,9 +97,20 @@ function removeLessonMaterials(lesson: Lesson): void {
   }
 }
 
+function removeLessonMedia(lesson: Lesson): void {
+  for (const video of lesson.practicalVideos || []) {
+    const filePath = path.join(VIDEO_DIR, path.basename(video.videoFileName)); if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+  for (const exercise of lesson.imageExercises || []) {
+    for (const asset of [exercise.original, exercise.corrected].filter(Boolean) as ImageAsset[]) {
+      const filePath = path.join(LESSON_MEDIA_DIR, path.basename(asset.storageFileName)); if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+  }
+}
+
 function removeLessonsAndRelatedData(db: ReturnType<typeof readDb>, lessonIds: string[]): void {
   const idSet = new Set(lessonIds);
-  db.lessons.filter(lesson => idSet.has(lesson.id)).forEach(lesson => { removeLessonVideo(lesson); removeLessonMaterials(lesson); });
+  db.lessons.filter(lesson => idSet.has(lesson.id)).forEach(lesson => { removeLessonVideo(lesson); removeLessonMaterials(lesson); removeLessonMedia(lesson); });
   db.lessons = db.lessons.filter(lesson => !idSet.has(lesson.id));
   db.lessonProgress = db.lessonProgress.filter(progress => !idSet.has(progress.lessonId));
   db.userContentOverrides = db.userContentOverrides.filter(override => !(override.contentType === 'LESSON' && idSet.has(override.contentId)));
@@ -106,6 +123,23 @@ function isMp4File(filePath: string): boolean {
     const bytes = fs.readSync(fd, header, 0, header.length, 0);
     return bytes >= 12 && header.subarray(4, 8).toString('ascii') === 'ftyp';
   } finally { fs.closeSync(fd); }
+}
+
+function imageMimeFromSignature(filePath: string): ImageAsset['mimeType'] | null {
+  const buffer = fs.readFileSync(filePath).subarray(0, 16);
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function savePrivateImage(file: Express.Multer.File): ImageAsset {
+  const mimeType = imageMimeFromSignature(file.path);
+  if (!mimeType) throw new Error('Imagem inválida. Envie JPEG, PNG ou WebP válido.');
+  const storageFileName = `lesson_${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`;
+  const finalPath = path.join(LESSON_MEDIA_DIR, storageFileName);
+  fs.renameSync(file.path, finalPath);
+  return { storageFileName, originalName: file.originalname, mimeType, sizeBytes: fs.statSync(finalPath).size, uploadedAt: new Date().toISOString() };
 }
 
 function runMediaCommand(command: string, args: string[]): Promise<string> {
@@ -1036,6 +1070,8 @@ adminRouter.post('/lessons', (req: Request & { auth?: any }, res: Response): voi
     videoFileName: null,
     videoProvider: 'LOCAL_SECURE',
     supplementaryMaterials: [],
+    practicalVideos: [],
+    imageExercises: [],
     releaseType: 'INHERIT',
     releaseDays: 0,
     releaseDate: null,
@@ -1179,6 +1215,9 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), async (req
   lesson.videoSizeBytes = fs.statSync(finalPath).size;
   lesson.videoUploadedAt = new Date().toISOString();
   lesson.videoProvider = 'LOCAL_SECURE';
+  // A replacement changes the primary lesson. Every student must finish the
+  // new primary video before private complementary media is available again.
+  for (const progress of db.lessonProgress.filter(item => item.lessonId === lesson.id)) progress.mainVideoEndedAt = null;
   try {
     writeDb(db);
   } catch (error) {
@@ -1211,6 +1250,94 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), async (req
       optimizedForStreaming: true,
     },
   });
+});
+
+adminRouter.post('/lessons/:id/practical-videos', upload.single('video'), async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const file = req.file; const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id);
+  if (!file || !lesson) { if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path); res.status(file ? 404 : 400).json({ error: file ? 'Aula não encontrada.' : 'Envie um vídeo MP4.' }); return; }
+  if (!String(req.body.title || '').trim() || !isMp4File(file.path)) { fs.unlinkSync(file.path); res.status(400).json({ error: 'Título e MP4 válido são obrigatórios.' }); return; }
+  const filename = `practical_${crypto.randomUUID()}.mp4`; const finalPath = path.join(VIDEO_DIR, filename);
+  try { await optimizeMp4(file.path, finalPath); } catch (error) { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); res.status(400).json({ error: error instanceof Error ? error.message : 'Falha ao otimizar vídeo.' }); return; }
+  if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+  const video = { id: `pvid_${crypto.randomUUID()}`, title: String(req.body.title).trim(), description: String(req.body.description || '').trim(), position: lesson.practicalVideos.length + 1, videoFileName: filename, sizeBytes: fs.statSync(finalPath).size, durationSeconds: Number(req.body.durationSeconds) || 0, uploadedAt: new Date().toISOString() };
+  lesson.practicalVideos.push(video); await writeDbAndWait(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'UPLOAD_PRACTICAL_VIDEO', entityType: 'LESSON', entityId: lesson.id, details: { videoId: video.id, title: video.title } });
+  res.status(201).json({ message: 'Vídeo prático enviado e otimizado.', video: { ...video, videoFileName: undefined } });
+});
+
+adminRouter.delete('/lessons/:id/practical-videos/:videoId', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id); const video = lesson?.practicalVideos.find(item => item.id === req.params.videoId);
+  if (!lesson || !video) { res.status(404).json({ error: 'Vídeo prático não encontrado.' }); return; }
+  lesson.practicalVideos = lesson.practicalVideos.filter(item => item.id !== video.id).map((item, index) => ({ ...item, position: index + 1 }));
+  await writeDbAndWait(db); const filePath = path.join(VIDEO_DIR, path.basename(video.videoFileName)); if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  res.json({ message: 'Vídeo prático removido.' });
+});
+
+adminRouter.put('/lessons/:id/practical-videos/:videoId', async (req: Request, res: Response): Promise<void> => {
+  const db = readDb(); const video = db.lessons.find(item => item.id === req.params.id)?.practicalVideos.find(item => item.id === req.params.videoId);
+  if (!video) { res.status(404).json({ error: 'Vídeo prático não encontrado.' }); return; }
+  if (req.body.title !== undefined) video.title = String(req.body.title).trim(); if (req.body.description !== undefined) video.description = String(req.body.description).trim(); if (req.body.position !== undefined) video.position = Number(req.body.position);
+  await writeDbAndWait(db); res.json({ message: 'Vídeo prático atualizado.', video: { ...video, videoFileName: undefined } });
+});
+
+adminRouter.post('/lessons/:id/practical-videos/:videoId/replace', upload.single('video'), async (req: Request, res: Response): Promise<void> => {
+  const file = req.file; const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id); const video = lesson?.practicalVideos.find(item => item.id === req.params.videoId);
+  if (!file || !lesson || !video) { if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path); res.status(404).json({ error: 'Vídeo prático não encontrado.' }); return; }
+  if (!isMp4File(file.path)) { fs.unlinkSync(file.path); res.status(400).json({ error: 'MP4 inválido.' }); return; }
+  const filename = `practical_${crypto.randomUUID()}.mp4`; const finalPath = path.join(VIDEO_DIR, filename);
+  try { await optimizeMp4(file.path, finalPath); if (fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch (error) { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); res.status(400).json({ error: error instanceof Error ? error.message : 'Falha ao otimizar vídeo.' }); return; }
+  const previous = video.videoFileName; video.videoFileName = filename; video.sizeBytes = fs.statSync(finalPath).size; video.uploadedAt = new Date().toISOString(); await writeDbAndWait(db);
+  const oldPath = path.join(VIDEO_DIR, path.basename(previous)); if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); res.json({ message: 'Vídeo prático substituído.' });
+});
+
+adminRouter.put('/lessons/:id/image-exercises/:exerciseId', async (req: Request, res: Response): Promise<void> => {
+  const db = readDb(); const exercise = db.lessons.find(item => item.id === req.params.id)?.imageExercises.find(item => item.id === req.params.exerciseId);
+  if (!exercise) { res.status(404).json({ error: 'Exercício não encontrado.' }); return; }
+  if (req.body.title !== undefined) exercise.title = String(req.body.title).trim(); if (req.body.description !== undefined) exercise.description = String(req.body.description).trim(); if (req.body.position !== undefined) exercise.position = Number(req.body.position);
+  await writeDbAndWait(db); res.json({ message: 'Exercício atualizado.', exercise });
+});
+
+adminRouter.post('/lessons/:id/image-exercises/:exerciseId/replace-:kind', imageUpload.single('image'), async (req: Request, res: Response): Promise<void> => {
+  const file = req.file; const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id); const exercise = lesson?.imageExercises.find(item => item.id === req.params.exerciseId); const kind = req.params.kind;
+  if (!file || !lesson || !exercise || !['original', 'corrected'].includes(kind)) { if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path); res.status(404).json({ error: 'Imagem ou exercício não encontrado.' }); return; }
+  try {
+    const asset = savePrivateImage(file); const previous = kind === 'original' ? exercise.original : exercise.corrected;
+    if (kind === 'original') exercise.original = asset; else exercise.corrected = asset;
+    await writeDbAndWait(db);
+    if (previous) { const oldPath = path.join(LESSON_MEDIA_DIR, path.basename(previous.storageFileName)); if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); }
+    res.json({ message: 'Imagem substituída com segurança.' });
+  } catch (error) { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); res.status(400).json({ error: error instanceof Error ? error.message : 'Imagem inválida.' }); }
+});
+
+adminRouter.put('/lessons/:id/media-order', async (req: Request, res: Response): Promise<void> => {
+  const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id); if (!lesson) { res.status(404).json({ error: 'Aula não encontrada.' }); return; }
+  const order = (items: { id: string; position: number }[] | undefined, target: Array<{ id: string; position: number }>) => { if (!items) return; if (items.length !== target.length || items.some(item => !target.some(current => current.id === item.id))) throw new Error('Ordem de mídias inválida.'); items.forEach(item => { const current = target.find(value => value.id === item.id)!; current.position = Number(item.position); }); };
+  try { order(req.body.practicalVideos, lesson.practicalVideos); order(req.body.imageExercises, lesson.imageExercises); await writeDbAndWait(db); res.json({ message: 'Ordem das mídias atualizada.' }); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Ordem inválida.' }); }
+});
+
+adminRouter.post('/lessons/:id/image-exercises', imageUpload.fields([{ name: 'original', maxCount: 1 }, { name: 'corrected', maxCount: 1 }]), async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const files = req.files as Record<string, Express.Multer.File[]> | undefined; const originalFile = files?.original?.[0]; const correctedFile = files?.corrected?.[0]; const allFiles = [originalFile, correctedFile].filter(Boolean) as Express.Multer.File[];
+  const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id);
+  if (!lesson || !originalFile || !String(req.body.title || '').trim()) { allFiles.forEach(file => fs.existsSync(file.path) && fs.unlinkSync(file.path)); res.status(400).json({ error: 'Título e imagem sem correção são obrigatórios.' }); return; }
+  const moved: ImageAsset[] = [];
+  try {
+    const original = savePrivateImage(originalFile); moved.push(original);
+    const corrected = correctedFile ? savePrivateImage(correctedFile) : undefined; if (corrected) moved.push(corrected);
+    const exercise = { id: `imgex_${crypto.randomUUID()}`, title: String(req.body.title).trim(), description: String(req.body.description || '').trim(), position: lesson.imageExercises.length + 1, original, corrected };
+    lesson.imageExercises.push(exercise); await writeDbAndWait(db);
+    res.status(201).json({ message: 'Exercício de imagens enviado.', exercise: { ...exercise, original: { ...original, storageFileName: undefined }, corrected: corrected ? { ...corrected, storageFileName: undefined } : undefined } });
+  } catch (error) {
+    allFiles.forEach(file => fs.existsSync(file.path) && fs.unlinkSync(file.path)); moved.forEach(asset => { const target = path.join(LESSON_MEDIA_DIR, asset.storageFileName); if (fs.existsSync(target)) fs.unlinkSync(target); });
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Falha ao salvar imagens.' });
+  }
+});
+
+adminRouter.delete('/lessons/:id/image-exercises/:exerciseId', async (req: Request, res: Response): Promise<void> => {
+  const db = readDb(); const lesson = db.lessons.find(item => item.id === req.params.id); const exercise = lesson?.imageExercises.find(item => item.id === req.params.exerciseId);
+  if (!lesson || !exercise) { res.status(404).json({ error: 'Exercício não encontrado.' }); return; }
+  lesson.imageExercises = lesson.imageExercises.filter(item => item.id !== exercise.id).map((item, index) => ({ ...item, position: index + 1 })); await writeDbAndWait(db);
+  for (const asset of [exercise.original, exercise.corrected].filter(Boolean) as ImageAsset[]) { const filePath = path.join(LESSON_MEDIA_DIR, path.basename(asset.storageFileName)); if (fs.existsSync(filePath)) fs.unlinkSync(filePath); }
+  res.json({ message: 'Exercício removido.' });
 });
 
 adminRouter.post('/lessons/:id/materials', materialUpload.single('file'), (req: Request & { auth?: any }, res: Response): void => {

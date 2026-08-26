@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { readDb, writeDb, LessonProgress, User, MATERIAL_DIR } from '../db.js';
+import { readDb, writeDbAndWait, LessonProgress, User, MATERIAL_DIR, LESSON_MEDIA_DIR, ImageAsset } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { canUserAccessLesson, canUserAccessModule, calculateDiffDays } from '../accessControl.js';
 import { generateStreamTicket } from '../stream.js';
@@ -21,6 +21,39 @@ studentRouter.get('/material/:lessonId/:materialId', (req: Request & { auth?: an
   const filePath = path.join(MATERIAL_DIR, path.basename(material.storageFileName));
   if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'Arquivo do material não encontrado.' }); return; }
   res.download(filePath, material.title);
+});
+
+function lessonForMedia(req: Request & { auth?: any }, res: Response) {
+  const db = readDb();
+  const lesson = db.lessons.find(item => item.id === req.params.lessonId);
+  if (!lesson || !canUserAccessLesson(req.auth!.user.id, lesson.id).allowed) { res.status(403).json({ error: 'Mídia não autorizada.' }); return null; }
+  return { db, lesson };
+}
+
+function sendPrivateImage(res: Response, asset: ImageAsset, inline: boolean): void {
+  const filePath = path.join(LESSON_MEDIA_DIR, path.basename(asset.storageFileName));
+  if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'Imagem não encontrada.' }); return; }
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Type', asset.mimeType);
+  res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(asset.originalName)}`);
+  fs.createReadStream(filePath).pipe(res);
+}
+
+studentRouter.get('/lesson/:lessonId/image-exercises/:exerciseId/original', (req: Request & { auth?: any }, res: Response): void => {
+  const found = lessonForMedia(req, res); if (!found) return;
+  const exercise = found.lesson.imageExercises.find(item => item.id === req.params.exerciseId);
+  if (!exercise) { res.status(404).json({ error: 'Exercício não encontrado.' }); return; }
+  sendPrivateImage(res, exercise.original, false);
+});
+
+studentRouter.get('/lesson/:lessonId/image-exercises/:exerciseId/corrected', (req: Request & { auth?: any }, res: Response): void => {
+  const found = lessonForMedia(req, res); if (!found) return;
+  const progress = found.db.lessonProgress.find(item => item.userId === req.auth!.user.id && item.lessonId === found.lesson.id);
+  if (!progress?.mainVideoEndedAt) { res.status(403).json({ error: 'Finalize o vídeo principal para visualizar a correção.' }); return; }
+  const exercise = found.lesson.imageExercises.find(item => item.id === req.params.exerciseId);
+  if (!exercise?.corrected) { res.status(404).json({ error: 'Imagem corrigida não encontrada.' }); return; }
+  sendPrivateImage(res, exercise.corrected, true);
 });
 
 function maskEmail(email: string): string {
@@ -248,6 +281,13 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
       durationSeconds: lesson.durationSeconds,
       hasVideo: Boolean(lesson.videoFileName || lesson.playbackId),
       supplementaryMaterials: lesson.supplementaryMaterials.map(({ storageFileName, ...material }) => material),
+      practicalVideos: lesson.practicalVideos.map(({ videoFileName, ...video }) => video),
+      imageExercises: lesson.imageExercises.map(exercise => ({
+        id: exercise.id, title: exercise.title, description: exercise.description, position: exercise.position,
+        originalDownloadUrl: `/api/student/lesson/${lesson.id}/image-exercises/${exercise.id}/original`,
+        hasCorrected: Boolean(exercise.corrected),
+        correctedViewUrl: progress?.mainVideoEndedAt && exercise.corrected ? `/api/student/lesson/${lesson.id}/image-exercises/${exercise.id}/corrected` : null,
+      })),
       module: { id: mod?.id, title: mod?.title },
       topic: { id: top?.id, title: top?.title },
       prevLesson,
@@ -268,12 +308,39 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
       isCompleted: progress?.isCompleted || false,
       progressPercent: progress?.progressPercent || 0,
       lastPositionSeconds: progress?.lastPositionSeconds || 0,
+      mainVideoEndedAt: progress?.mainVideoEndedAt || null,
     },
   });
 });
 
+studentRouter.post('/lesson/:lessonId/main-video-ended', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const user = req.auth!.user as User;
+  const { positionSeconds, durationSeconds } = req.body || {};
+  const db = readDb();
+  const lesson = db.lessons.find(item => item.id === req.params.lessonId);
+  if (!lesson || !canUserAccessLesson(user.id, req.params.lessonId).allowed) { res.status(403).json({ error: 'Aula não autorizada.' }); return; }
+  const duration = Number(durationSeconds) || lesson.durationSeconds;
+  const position = Number(positionSeconds);
+  if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0 || position < duration * 0.98) {
+    res.status(400).json({ error: 'A liberação exige o término real do vídeo principal.' }); return;
+  }
+  let progress = db.lessonProgress.find(item => item.userId === user.id && item.lessonId === lesson.id);
+  if (!progress) {
+    progress = { id: `prog_${crypto.randomUUID()}`, userId: user.id, lessonId: lesson.id, progressPercent: 100, lastPositionSeconds: duration, isCompleted: true, watchedSeconds: duration, accessCount: 1, lastWatchedAt: new Date().toISOString(), mainVideoEndedAt: new Date().toISOString() };
+    db.lessonProgress.push(progress);
+  } else {
+    progress.mainVideoEndedAt = progress.mainVideoEndedAt || new Date().toISOString();
+    progress.lastPositionSeconds = Math.max(progress.lastPositionSeconds, Math.min(position, duration));
+    progress.progressPercent = Math.max(progress.progressPercent, 100);
+    progress.isCompleted = true;
+    progress.lastWatchedAt = new Date().toISOString();
+  }
+  await writeDbAndWait(db);
+  res.json({ message: 'Conteúdos complementares liberados.', mainVideoEndedAt: progress.mainVideoEndedAt });
+});
+
 // POST /api/student/progress
-studentRouter.post('/progress', (req: Request & { auth?: any }, res: Response): void => {
+studentRouter.post('/progress', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
   const user = req.auth.user as User;
   const { lessonId, positionSeconds, durationSeconds, manualCompleted, completionAction } = req.body;
 
@@ -325,7 +392,7 @@ studentRouter.post('/progress', (req: Request & { auth?: any }, res: Response): 
     progress.lastWatchedAt = new Date().toISOString();
   }
 
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json({
     message: 'Progresso salvo com sucesso.',

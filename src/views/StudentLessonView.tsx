@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Play, CheckCircle2, Lock, ChevronLeft, ChevronRight, 
-  FileText, Download, ShieldCheck, Clock, BookOpen, AlertCircle, ArrowLeft 
+  FileText, Download, ShieldCheck, Clock, BookOpen, AlertCircle, ArrowLeft, Image as ImageIcon, Video, Maximize, X
 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { LessonDetail, CourseSummary, ModuleSummary, WatermarkData } from '../types';
@@ -12,6 +12,19 @@ interface StudentLessonViewProps {
   onBackToDashboard: () => void;
 }
 
+const CorrectedImageViewer: React.FC<{ image: { title: string; url: string }; watermark: WatermarkData; onBack: () => void }> = ({ image, watermark, onBack }) => {
+  const [zoom, setZoom] = useState(1);
+  const [fullscreen, setFullscreen] = useState(false);
+  const viewerRef = React.useRef<HTMLDivElement>(null);
+  const toggleFullscreen = async () => { if (!document.fullscreenElement) { await viewerRef.current?.requestFullscreen(); setFullscreen(true); } else { await document.exitFullscreen(); setFullscreen(false); } };
+  return <div ref={viewerRef} className="relative aspect-video overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950">
+    <div className="absolute left-3 right-3 top-3 z-20 flex items-center justify-between"><button type="button" onClick={onBack} className="inline-flex items-center gap-1 rounded-lg bg-black/70 px-3 py-2 text-xs font-bold text-white"><X className="h-4 w-4" />Voltar ao vídeo</button><div className="flex gap-2"><button type="button" onClick={() => setZoom(value => Math.max(1, value - .25))} className="rounded-lg bg-black/70 px-3 py-2 text-xs text-white">−</button><button type="button" onClick={() => setZoom(value => Math.min(3, value + .25))} className="rounded-lg bg-black/70 px-3 py-2 text-xs text-white">+</button><button type="button" onClick={toggleFullscreen} className="rounded-lg bg-black/70 p-2 text-white"><Maximize className="h-4 w-4" /></button></div></div>
+    <img src={image.url} alt={`Correção: ${image.title}`} draggable className="h-full w-full object-contain transition-transform duration-200" style={{ transform: `scale(${zoom})` }} />
+    {watermark.enabled && <div className="pointer-events-none absolute left-[18%] top-[46%] z-10 rotate-[-14deg] rounded bg-black/45 px-3 py-2 font-mono text-xs text-white/80">{watermark.userName} • {watermark.userMaskedEmail} • IP {watermark.clientIp}<br />Conteúdo exclusivo — captura rastreável</div>}
+    <div className="absolute bottom-3 left-3 rounded bg-black/65 px-3 py-2 text-xs text-neutral-200">{image.title} · visualização protegida</div>
+  </div>;
+};
+
 export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
   lessonId,
   onSelectLesson,
@@ -21,7 +34,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     lesson: LessonDetail;
     stream: { streamUrl: string; ticket: string; provider: string };
     watermark: WatermarkData;
-    progress: { isCompleted: boolean; progressPercent: number; lastPositionSeconds: number };
+    progress: { isCompleted: boolean; progressPercent: number; lastPositionSeconds: number; mainVideoEndedAt?: string | null };
     telegram?: { url: string; message: string; buttonLabel: string };
   } | null>(null);
 
@@ -32,6 +45,10 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     availableAt?: string;
     reason?: string;
   } | null>(null);
+  const [mediaTab, setMediaTab] = useState<'MAIN' | 'PRACTICAL' | 'IMAGES'>('MAIN');
+  const [practicalStream, setPracticalStream] = useState<{ id: string; title: string; streamUrl: string; durationSeconds: number } | null>(null);
+  const [correctedImage, setCorrectedImage] = useState<{ title: string; url: string } | null>(null);
+  const [mediaMessage, setMediaMessage] = useState<string | null>(null);
 
   const fetchLesson = async (id: string) => {
     setLoading(true);
@@ -63,7 +80,26 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
 
   useEffect(() => {
     fetchLesson(lessonId);
+    setMediaTab('MAIN'); setPracticalStream(null); setCorrectedImage(null); setMediaMessage(null);
   }, [lessonId]);
+
+  const handleMainVideoEnded = async (positionSeconds: number, durationSeconds: number) => {
+    try {
+      const response = await fetch(`/api/student/lesson/${lessonId}/main-video-ended`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positionSeconds, durationSeconds }) });
+      if (!response.ok) throw new Error((await response.json()).error || 'Não foi possível liberar os conteúdos.');
+      const result = await response.json();
+      setLessonData(prev => prev ? { ...prev, progress: { ...prev.progress, mainVideoEndedAt: result.mainVideoEndedAt, isCompleted: true, progressPercent: 100 } } : prev);
+      setMediaMessage('Vídeos práticos e correções foram liberados.');
+    } catch (error) { setMediaMessage(error instanceof Error ? error.message : 'Falha ao liberar conteúdos.'); }
+  };
+
+  const selectPracticalVideo = async (video: NonNullable<typeof lessonData>['lesson']['practicalVideos'][number]) => {
+    try {
+      const response = await fetch(`/api/stream/ticket/${lessonId}/practical/${video.id}`);
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Não foi possível abrir o vídeo prático.');
+      setCorrectedImage(null); setPracticalStream({ id: video.id, title: video.title, streamUrl: data.streamUrl, durationSeconds: video.durationSeconds || 600 }); setMediaTab('PRACTICAL');
+    } catch (error) { setMediaMessage(error instanceof Error ? error.message : 'Falha ao abrir vídeo.'); }
+  };
 
   const handleProgressUpdate = async (pos: number, dur: number, completed: boolean, completionAction?: 'MARK_COMPLETE' | 'MARK_INCOMPLETE') => {
     try {
@@ -186,8 +222,30 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
         {/* Left 2 Cols: Player & Lesson Info */}
         <div className="lg:col-span-2 space-y-6">
+          <section className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-3">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {([
+                ['MAIN', 'Vídeo principal', Play], ['PRACTICAL', 'Operando na prática', Video], ['IMAGES', 'Imagens e correções', ImageIcon],
+              ] as const).map(([tab, label, Icon]) => {
+                const locked = tab !== 'MAIN' && !lessonData.progress.mainVideoEndedAt;
+                return <button key={tab} type="button" onClick={() => { setMediaTab(tab); setMediaMessage(locked ? 'Finalize o vídeo principal para liberar este conteúdo.' : null); }} className={`shrink-0 inline-flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold ${mediaTab === tab ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'} ${locked ? 'opacity-70' : ''}`}><Icon className="h-4 w-4" />{locked && <Lock className="h-3.5 w-3.5" />}{label}</button>;
+              })}
+            </div>
+            {mediaMessage && <p className="mt-2 px-2 text-xs text-amber-300">{mediaMessage}</p>}
+          </section>
+
+          {mediaTab === 'PRACTICAL' && <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4 space-y-3">
+            <h2 className="text-sm font-bold text-white">Operando na prática</h2>
+            {!lessonData.progress.mainVideoEndedAt ? <p className="text-xs text-neutral-400">Finalize o vídeo principal para liberar os vídeos curtos.</p> : lessonData.lesson.practicalVideos?.length ? <div className="grid gap-2 sm:grid-cols-2">{lessonData.lesson.practicalVideos.map(video => <button type="button" key={video.id} onClick={() => selectPracticalVideo(video)} className="rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-left hover:border-amber-500/50"><p className="text-xs font-bold text-neutral-100">{video.title}</p><p className="mt-1 text-[11px] text-neutral-500 line-clamp-2">{video.description || 'Vídeo complementar de operação.'}</p></button>)}</div> : <p className="text-xs text-neutral-500">Ainda não há vídeos práticos nesta aula.</p>}
+          </section>}
+
+          {mediaTab === 'IMAGES' && <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4 space-y-3">
+            <h2 className="text-sm font-bold text-white">Imagens e correções</h2>
+            {lessonData.lesson.imageExercises?.length ? <div className="space-y-2">{lessonData.lesson.imageExercises.map(exercise => <div key={exercise.id} className="flex flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-bold text-neutral-100">{exercise.title}</p><p className="text-[11px] text-neutral-500">{exercise.description}</p></div><div className="flex gap-2"><a href={exercise.originalDownloadUrl} className="inline-flex items-center gap-1 rounded-lg bg-neutral-800 px-3 py-2 text-xs font-semibold text-white"><Download className="h-3.5 w-3.5" />Sem correção</a>{exercise.hasCorrected && (lessonData.progress.mainVideoEndedAt && exercise.correctedViewUrl ? <button type="button" onClick={() => { setPracticalStream(null); setCorrectedImage({ title: exercise.title, url: exercise.correctedViewUrl! }); }} className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-neutral-950"><ImageIcon className="h-3.5 w-3.5" />Ver correção</button> : <span className="inline-flex items-center gap-1 rounded-lg border border-neutral-700 px-3 py-2 text-xs text-neutral-500"><Lock className="h-3.5 w-3.5" />Correção bloqueada</span>)}</div></div>)}</div> : <p className="text-xs text-neutral-500">Ainda não há exercícios de imagem nesta aula.</p>}
+          </section>}
+
           {/* Custom Video Player with Floating Watermark */}
-          {lessonData.lesson.hasVideo === false ? <div className="aspect-video rounded-2xl border border-neutral-800 bg-neutral-950 flex flex-col items-center justify-center gap-3 text-center p-6">
+          {correctedImage ? <CorrectedImageViewer image={correctedImage} watermark={lessonData.watermark} onBack={() => setCorrectedImage(null)} /> : practicalStream ? <VideoPlayer streamUrl={practicalStream.streamUrl} lessonId={`${lessonData.lesson.id}:${practicalStream.id}`} lessonTitle={practicalStream.title} durationSeconds={practicalStream.durationSeconds} initialPositionSeconds={0} watermark={lessonData.watermark} isCompleted={false} trackProgress={false} /> : lessonData.lesson.hasVideo === false ? <div className="aspect-video rounded-2xl border border-neutral-800 bg-neutral-950 flex flex-col items-center justify-center gap-3 text-center p-6">
             <AlertCircle className="h-8 w-8 text-amber-400" />
             <p className="text-sm font-semibold text-white">Vídeo ainda não disponível</p>
             <p className="text-xs text-neutral-400">O administrador ainda precisa concluir o upload desta aula.</p>
@@ -203,6 +261,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
             onLessonCompleted={() => {
               setLessonData(prev => prev ? { ...prev, progress: { ...prev.progress, isCompleted: true } } : null);
             }}
+            onMainVideoEnded={handleMainVideoEnded}
           />}
 
           {lessonData.telegram?.url && (

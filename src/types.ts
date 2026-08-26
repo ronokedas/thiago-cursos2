@@ -155,6 +155,8 @@ export interface LessonSummary {
   videoSizeBytes?: number;
   videoUploadedAt?: string;
   supplementaryMaterials?: SupplementaryMaterial[];
+  practicalVideos?: Array<{ id: string; title: string; description: string; position: number; sizeBytes: number; durationSeconds: number; uploadedAt: string }>;
+  imageExercises?: Array<{ id: string; title: string; description: string; position: number; original?: { originalName: string }; corrected?: { originalName: string } }>;
 }
 
 export interface TopicSummary {
@@ -230,4 +232,6 @@ export interface LessonDetail {
   topic: { id: string; title: string };
   prevLesson: { id: string; title: string } | null;
   nextLesson: { id: string; title: string } | null;
+  practicalVideos?: Array<{ id: string; title: string; description: string; position: number; sizeBytes: number; durationSeconds: number; uploadedAt: string }>;
+  imageExercises?: Array<{ id: string; title: string; description: string; position: number; originalDownloadUrl: string; hasCorrected: boolean; correctedViewUrl: string | null }>;
 }

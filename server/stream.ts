@@ -13,6 +13,8 @@ interface StreamTicket {
   lessonId: string;
   clientIp: string;
   expiresAt: number; // timestamp in ms
+  mediaType: 'MAIN' | 'PRACTICAL';
+  practicalVideoId?: string;
 }
 
 const activeTickets = new Map<string, StreamTicket>();
@@ -28,7 +30,7 @@ setInterval(() => {
   }
 }, 60000);
 
-export function generateStreamTicket(userId: string, lessonId: string, clientIp: string): string {
+export function generateStreamTicket(userId: string, lessonId: string, clientIp: string, media: { type?: 'MAIN' | 'PRACTICAL'; practicalVideoId?: string } = {}): string {
   const token = crypto.randomBytes(24).toString('hex');
   activeTickets.set(token, {
     token,
@@ -36,6 +38,8 @@ export function generateStreamTicket(userId: string, lessonId: string, clientIp:
     lessonId,
     clientIp,
     expiresAt: Date.now() + 2 * 60 * 60 * 1000, // Valid for 2 hours during continuous playback
+    mediaType: media.type || 'MAIN',
+    practicalVideoId: media.practicalVideoId,
   });
   return token;
 }
@@ -76,8 +80,14 @@ export function handleStreamRequest(req: Request, res: Response): void {
     return;
   }
 
-  // Check if physical video exists on server
-  let videoPath = lesson.videoFileName ? path.join(VIDEO_DIR, lesson.videoFileName) : null;
+  let fileName = lesson.videoFileName;
+  if (ticket.mediaType === 'PRACTICAL') {
+    const progress = db.lessonProgress.find(item => item.userId === user.id && item.lessonId === lesson.id);
+    if (!progress?.mainVideoEndedAt) { res.status(403).send('Finalize o vídeo principal para liberar este conteúdo.'); return; }
+    fileName = lesson.practicalVideos.find(item => item.id === ticket.practicalVideoId)?.videoFileName;
+  }
+  // File names are generated internally and never accepted from the request.
+  const videoPath = fileName ? path.join(VIDEO_DIR, path.basename(fileName)) : null;
 
   // Security headers to prevent indexing & caching in unsafe intermediaries
   res.setHeader('X-Content-Type-Options', 'nosniff');
