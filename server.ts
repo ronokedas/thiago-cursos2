@@ -10,7 +10,7 @@ import { studentRouter } from './server/routes/student.js';
 import { adminRouter } from './server/routes/admin.js';
 import { streamRouter } from './server/routes/stream.js';
 import { initializePostgres } from './server/postgres.js';
-import { hydrateDatabaseFromPostgres } from './server/db.js';
+import { hydrateDatabaseFromPostgres, readDb, writeDb } from './server/db.js';
 
 async function startServer() {
   const app = express();
@@ -24,6 +24,14 @@ async function startServer() {
   await initializePostgres(path.join(process.cwd(), 'data', 'database.json'));
   await hydrateDatabaseFromPostgres();
   seedDatabase();
+  setInterval(() => {
+    const db = readDb();
+    const now = Date.now();
+    const beforeSessions = db.sessions.length;
+    db.sessions = db.sessions.filter(session => session.isActive || now - new Date(session.revokedAt || session.expiresAt).getTime() < 90 * 24 * 60 * 60 * 1000);
+    db.passwordResetTokens = db.passwordResetTokens.filter(token => !token.usedAt && new Date(token.expiresAt).getTime() > now);
+    if (db.sessions.length !== beforeSessions) writeDb(db);
+  }, 60 * 60 * 1000).unref();
 
   // Basic Middlewares
   app.use(express.json({ limit: '10mb' }));
@@ -85,16 +93,17 @@ async function startServer() {
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled request error:', err?.message || err);
     if (res.headersSent) return;
-    const status = Number(err?.statusCode || err?.status) || 500;
-    res.status(status).json({ error: status === 500 ? 'Erro interno do servidor.' : String(err.message || 'Requisição inválida.') });
+    const isUploadError = err?.name === 'MulterError' || String(err?.message || '').includes('arquivo MP4');
+    const status = isUploadError ? (err.code === 'LIMIT_FILE_SIZE' ? 413 : 400) : Number(err?.statusCode || err?.status) || 500;
+    const message = err?.code === 'LIMIT_FILE_SIZE' ? 'O arquivo excede o limite de 1 GB.' : (status === 500 ? 'Erro interno do servidor.' : String(err.message || 'Requisição inválida.'));
+    res.status(status).json({ error: message });
   });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n======================================================`);
     console.log(`🚀 Mentoria A Mecânica — Plataforma de Membros`);
     console.log(`🌐 Servidor rodando em http://localhost:${PORT}`);
-    console.log(`👤 Super Admin padrão: admin@mecanica.com (Senha: Admin@Mecanica2026!)`);
-    console.log(`🎓 Aluno Teste padrão: aluno@mecanica.com (Senha: Aluno@Mecanica2026!)`);
+    console.log(`👤 Administrador inicial configurado.`);
     console.log(`======================================================\n`);
   });
 }

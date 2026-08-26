@@ -15,6 +15,7 @@ interface VideoPlayerProps {
   isCompleted: boolean;
   onProgressUpdate?: (positionSeconds: number, durationSeconds: number, isCompleted: boolean) => void;
   onLessonCompleted?: () => void;
+  onStreamError?: () => void;
 }
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -27,6 +28,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   isCompleted,
   onProgressUpdate,
   onLessonCompleted,
+  onStreamError,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -42,6 +44,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [controlsTimeout, setControlsTimeout] = useState<NodeJS.Timeout | null>(null);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [completedState, setCompletedState] = useState(isCompleted);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const currentTimeRef = useRef(currentTime);
+  const durationRef = useRef(duration);
+  const completedRef = useRef(completedState);
+  const progressCallbackRef = useRef(onProgressUpdate);
+  const completedCallbackRef = useRef(onLessonCompleted);
+
+  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  useEffect(() => { durationRef.current = duration; }, [duration]);
+  useEffect(() => { completedRef.current = completedState; }, [completedState]);
+  useEffect(() => { progressCallbackRef.current = onProgressUpdate; }, [onProgressUpdate]);
+  useEffect(() => { completedCallbackRef.current = onLessonCompleted; }, [onLessonCompleted]);
 
   // Dynamic watermark floating position
   const [watermarkPos, setWatermarkPos] = useState({ top: '15%', left: '15%' });
@@ -76,37 +90,38 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [lessonId, initialPositionSeconds]);
 
-  // Sync Progress to Backend every 5 seconds during playback
+  const saveProgress = useCallback((forceCompleted?: boolean) => {
+    const pos = Math.floor(videoRef.current?.currentTime ?? currentTimeRef.current);
+    const dur = Math.floor(videoRef.current?.duration || durationRef.current || durationSeconds || 600);
+    const reachedCompletion = forceCompleted ?? (dur > 0 && (pos / dur) * 100 >= 90);
+    if (reachedCompletion && !completedRef.current) {
+      completedRef.current = true;
+      setCompletedState(true);
+      completedCallbackRef.current?.();
+    }
+    progressCallbackRef.current?.(pos, dur, reachedCompletion || completedRef.current);
+  }, [durationSeconds]);
+
+  // Stable interval: state changes from timeupdate no longer reset the five-second save.
   useEffect(() => {
     if (!isPlaying) return;
-
-    const interval = setInterval(() => {
-      const pos = videoRef.current ? Math.floor(videoRef.current.currentTime) : currentTime;
-      const dur = duration || durationSeconds || 600;
-      const percent = (pos / dur) * 100;
-      const newlyCompleted = percent >= 90;
-
-      if (newlyCompleted && !completedState) {
-        setCompletedState(true);
-        onLessonCompleted?.();
-      }
-
-      onProgressUpdate?.(pos, dur, newlyCompleted || completedState);
-    }, 5000);
-
+    const interval = setInterval(() => saveProgress(), 5000);
     return () => clearInterval(interval);
-  }, [isPlaying, currentTime, duration, durationSeconds, completedState, onProgressUpdate, onLessonCompleted]);
+  }, [isPlaying, saveProgress]);
+
+  useEffect(() => () => saveProgress(), [saveProgress]);
 
   const togglePlay = useCallback(() => {
     if (!videoRef.current) return;
     if (isPlaying) {
       videoRef.current.pause();
       setIsPlaying(false);
+      saveProgress();
     } else {
       videoRef.current.play().catch(e => console.log('Autoplay prevented:', e));
       setIsPlaying(true);
     }
-  }, [isPlaying]);
+  }, [isPlaying, saveProgress]);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
@@ -118,11 +133,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setDuration(dur);
     }
 
-    if ((curr / dur) >= 0.9 && !completedState) {
-      setCompletedState(true);
-      onLessonCompleted?.();
-      onProgressUpdate?.(curr, dur, true);
-    }
+    if ((curr / dur) >= 0.9 && !completedRef.current) saveProgress(true);
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -221,13 +232,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onEnded={() => {
             setIsPlaying(false);
             setCompletedState(true);
-            onLessonCompleted?.();
-            onProgressUpdate?.(duration, duration, true);
+            saveProgress(true);
           }}
+          onError={() => { setStreamError('Não foi possível carregar este vídeo.'); onStreamError?.(); }}
           onClick={togglePlay}
           className="w-full h-full object-contain cursor-pointer"
           playsInline
         />
+
+        {streamError && (
+          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-neutral-950/95 p-6 text-center">
+            <ShieldAlert className="h-8 w-8 text-amber-400" />
+            <p className="text-sm font-semibold text-white">{streamError}</p>
+            <button type="button" onClick={() => window.location.reload()} className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-neutral-950">Tentar novamente</button>
+          </div>
+        )}
 
         {/* Dynamic Anti-Leak Floating Watermark */}
         {watermark.enabled && (

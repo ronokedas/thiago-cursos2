@@ -114,11 +114,6 @@ export function canUserAccessLesson(userId: string, lessonId: string): AccessChe
     return { allowed: true, reason: 'OK' };
   }
 
-  // Free preview check
-  if (lesson.isFreePreview && user.status === 'ACTIVE') {
-    return { allowed: true, reason: 'OK' };
-  }
-
   // 1. Account Status
   if (user.status !== 'ACTIVE') {
     return { allowed: false, reason: 'USER_INACTIVE' };
@@ -128,6 +123,9 @@ export function canUserAccessLesson(userId: string, lessonId: string): AccessChe
   if (new Date(user.expirationDate) < new Date()) {
     return { allowed: false, reason: 'USER_EXPIRED' };
   }
+
+  // A preview never bypasses a blocked, expired or manually denied account.
+  // It only bypasses the normal release schedule for an active student.
 
   // 3. Check Individual Lesson Override
   const lessonOverride = db.userContentOverrides.find(o => o.userId === userId && o.contentType === 'LESSON' && o.contentId === lessonId);
@@ -141,8 +139,13 @@ export function canUserAccessLesson(userId: string, lessonId: string): AccessChe
   // 4. Check Module Access
   const moduleCheck = canUserAccessModule(userId, lesson.moduleId);
   if (!moduleCheck.allowed) {
+    if (lesson.isFreePreview && ['DAYS_RESTRICTION', 'FIXED_DATE_RESTRICTION', 'MANUAL_RESTRICTION'].includes(moduleCheck.reason || '')) {
+      return { allowed: true, reason: 'OK' };
+    }
     return moduleCheck;
   }
+
+  if (lesson.isFreePreview) return { allowed: true, reason: 'OK' };
 
   // 5. Check Lesson Specific Release Rule if not INHERIT
   if (lesson.releaseType === 'IMMEDIATE' || lesson.releaseType === 'INHERIT') {
@@ -166,5 +169,14 @@ export function canUserAccessLesson(userId: string, lessonId: string): AccessChe
     };
   }
 
-  return { allowed: true, reason: 'OK' };
+  if (lesson.releaseType === 'FIXED_DATE') {
+    if (!lesson.releaseDate || new Date() >= new Date(lesson.releaseDate)) return { allowed: true, reason: 'OK' };
+    return { allowed: false, reason: 'FIXED_DATE_RESTRICTION', availableAt: new Date(lesson.releaseDate).toISOString() };
+  }
+
+  if (lesson.releaseType === 'MANUAL') {
+    return { allowed: false, reason: 'MANUAL_RESTRICTION' };
+  }
+
+  return { allowed: false, reason: 'MANUAL_RESTRICTION' };
 }

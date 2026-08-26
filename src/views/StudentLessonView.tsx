@@ -22,6 +22,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     stream: { streamUrl: string; ticket: string; provider: string };
     watermark: WatermarkData;
     progress: { isCompleted: boolean; progressPercent: number; lastPositionSeconds: number };
+    telegram?: { url: string; message: string; buttonLabel: string };
   } | null>(null);
 
   const [courseTree, setCourseTree] = useState<{ course: CourseSummary; modules: ModuleSummary[] } | null>(null);
@@ -64,18 +65,20 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     fetchLesson(lessonId);
   }, [lessonId]);
 
-  const handleProgressUpdate = async (pos: number, dur: number, completed: boolean) => {
+  const handleProgressUpdate = async (pos: number, dur: number, completed: boolean, completionAction?: 'MARK_COMPLETE' | 'MARK_INCOMPLETE') => {
     try {
-      await fetch('/api/student/progress', {
+      const response = await fetch('/api/student/progress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           lessonId,
           positionSeconds: pos,
           durationSeconds: dur,
-          manualCompleted: completed,
+          ...(completionAction ? { completionAction } : {}),
         }),
       });
+      if (!response.ok) throw new Error('Não foi possível salvar o progresso.');
+      setLessonData(prev => prev ? { ...prev, progress: { ...prev.progress, lastPositionSeconds: pos, progressPercent: Math.max(prev.progress.progressPercent, Math.round((pos / Math.max(dur, 1)) * 100)), isCompleted: completionAction === 'MARK_INCOMPLETE' ? false : (completed || prev.progress.isCompleted) } } : prev);
     } catch (err) {
       console.error(err);
     }
@@ -91,7 +94,8 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     handleProgressUpdate(
       lessonData.progress.lastPositionSeconds || 0,
       lessonData.lesson.durationSeconds || 600,
-      nextState
+      nextState,
+      nextState ? 'MARK_COMPLETE' : 'MARK_INCOMPLETE'
     );
   };
 
@@ -183,7 +187,11 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
         {/* Left 2 Cols: Player & Lesson Info */}
         <div className="lg:col-span-2 space-y-6">
           {/* Custom Video Player with Floating Watermark */}
-          <VideoPlayer
+          {lessonData.lesson.hasVideo === false ? <div className="aspect-video rounded-2xl border border-neutral-800 bg-neutral-950 flex flex-col items-center justify-center gap-3 text-center p-6">
+            <AlertCircle className="h-8 w-8 text-amber-400" />
+            <p className="text-sm font-semibold text-white">Vídeo ainda não disponível</p>
+            <p className="text-xs text-neutral-400">O administrador ainda precisa concluir o upload desta aula.</p>
+          </div> : <VideoPlayer
             streamUrl={lessonData.stream.streamUrl}
             lessonId={lessonData.lesson.id}
             lessonTitle={lessonData.lesson.title}
@@ -195,7 +203,17 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
             onLessonCompleted={() => {
               setLessonData(prev => prev ? { ...prev, progress: { ...prev.progress, isCompleted: true } } : null);
             }}
-          />
+          />}
+
+          {lessonData.telegram?.url && (
+            <section className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-5 text-sm">
+              <h2 className="font-bold text-sky-200">Dúvidas sobre esta aula?</h2>
+              <p className="mt-1 text-xs leading-relaxed text-neutral-300">{lessonData.telegram.message}</p>
+              <a href={lessonData.telegram.url} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex rounded-xl bg-sky-500 px-4 py-2.5 text-xs font-bold text-white hover:bg-sky-400">
+                {lessonData.telegram.buttonLabel || 'Entrar no grupo do Telegram'}
+              </a>
+            </section>
+          )}
 
           {/* Navigation Controls */}
           <div className="flex items-center justify-between p-4 bg-neutral-800/40 rounded-2xl border border-neutral-800">
@@ -289,7 +307,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
               Conteúdo do Curso
             </h2>
             <div className="flex items-center justify-between text-xs mb-2">
-              <span className="text-neutral-500">Progresso Geral</span>
+              <span className="text-neutral-500">Progresso desta aula</span>
               <span className="text-amber-400 font-bold">
                 {lessonData.progress.progressPercent || (lessonData.progress.isCompleted ? 100 : 0)}%
               </span>
@@ -314,7 +332,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
                       : 'bg-neutral-800/30 text-neutral-500 border-neutral-800 opacity-60'
                   }`}>
                     <span className="font-semibold text-xs truncate mr-2">
-                      Módulo {module.position}: {module.title}
+                      {module.title.replace(new RegExp(`^Módulo\\s+${module.position}:\\s*`, 'i'), `Módulo ${module.position}: `)}
                     </span>
                     {!isAllowed && (
                       <div className="flex items-center gap-1.5 shrink-0">

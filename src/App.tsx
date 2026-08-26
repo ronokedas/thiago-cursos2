@@ -16,7 +16,7 @@ import { AdminAuditLogsView } from './views/AdminAuditLogsView';
 import { AdminSettingsView } from './views/AdminSettingsView';
 import { ShieldAlert, ArrowLeft, X } from 'lucide-react';
 
-class AppErrorBoundary extends Component<React.PropsWithChildren, { hasError: boolean }> {
+class AppErrorBoundary extends Component<React.PropsWithChildren<{}>, { hasError: boolean }> {
   state = { hasError: false };
 
   static getDerivedStateFromError(): { hasError: boolean } {
@@ -67,7 +67,8 @@ const AppContent: React.FC = () => {
       const res = await fetch('/api/student/course');
       const data = await res.json();
       const firstLesson = data.modules?.flatMap((module: any) => module.topics || [])
-        .flatMap((topic: any) => topic.lessons || [])[0];
+        .flatMap((topic: any) => topic.lessons || [])
+        .find((lesson: any) => lesson.access?.allowed && lesson.hasVideo);
       if (firstLesson) setActiveLessonId(firstLesson.id);
     } catch (error) {
       console.error('Não foi possível abrir a primeira aula:', error);
@@ -199,14 +200,11 @@ const AppContent: React.FC = () => {
             )}
 
             {studentTab === 'course' && (
-              <StudentLessonView
-                lessonId={activeLessonId || 'lesson-1'}
+              activeLessonId ? <StudentLessonView
+                lessonId={activeLessonId}
                 onSelectLesson={id => setActiveLessonId(id)}
-                onBackToDashboard={() => {
-                  setActiveLessonId(null);
-                  setStudentTab('dashboard');
-                }}
-              />
+                onBackToDashboard={() => { setActiveLessonId(null); setStudentTab('dashboard'); }}
+              /> : <div className="mx-auto max-w-xl p-12 text-center text-neutral-300">Nenhuma aula disponível para exibição no momento.</div>
             )}
 
             {studentTab === 'profile' && <StudentProfileView />}

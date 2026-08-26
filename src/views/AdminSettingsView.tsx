@@ -358,6 +358,16 @@ export const AdminSettingsView: React.FC = () => {
           </div>
         </div>
 
+        <div className="bg-neutral-900/60 border border-sky-500/20 rounded-3xl p-6 space-y-4">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2"><Globe className="w-4 h-4 text-sky-400" /> Grupo de dúvidas no Telegram</h2>
+          <p className="text-[11px] text-neutral-400">O atalho aparecerá abaixo do player para os alunos quando um link válido estiver configurado.</p>
+          <div className="space-y-3 text-xs">
+            <input value={settings.telegramGroupUrl || ''} onChange={e => setSettings({ ...settings, telegramGroupUrl: e.target.value })} placeholder="https://t.me/seu_grupo" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+            <textarea maxLength={300} rows={2} value={settings.telegramHelpMessage || ''} onChange={e => setSettings({ ...settings, telegramHelpMessage: e.target.value })} placeholder="Mensagem exibida aos alunos" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+            <input maxLength={40} value={settings.telegramButtonLabel || ''} onChange={e => setSettings({ ...settings, telegramButtonLabel: e.target.value })} placeholder="Entrar no grupo do Telegram" className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+          </div>
+        </div>
+
         <div className="bg-neutral-900/60 border border-neutral-800 rounded-3xl p-6 space-y-5">
           <h2 className="text-sm font-bold text-white flex items-center gap-2"><LockKeyhole className="w-4 h-4 text-amber-400" /> Minha conta</h2>
           {profileMessage && <div className={`p-3 rounded-xl text-xs font-semibold ${profileMessage.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}`}>{profileMessage.text}</div>}

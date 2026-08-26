@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   BookOpen, Plus, Edit, Trash2, Video, Upload, 
   Clock, Lock, CheckCircle2, AlertCircle, ChevronDown, ChevronRight, X, Play 
@@ -14,8 +14,9 @@ export const AdminCoursesView: React.FC = () => {
   const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
   const [moduleTitle, setModuleTitle] = useState('');
   const [moduleDesc, setModuleDesc] = useState('');
-  const [moduleRule, setModuleRule] = useState<'IMMEDIATE' | 'AFTER_DAYS' | 'FIXED_DATE'>('IMMEDIATE');
+  const [moduleRule, setModuleRule] = useState<'IMMEDIATE' | 'AFTER_DAYS' | 'FIXED_DATE' | 'MANUAL'>('IMMEDIATE');
   const [moduleDays, setModuleDays] = useState(7);
+  const [moduleDate, setModuleDate] = useState('');
 
   // Topic modal
   const [topicModalOpen, setTopicModalOpen] = useState(false);
@@ -35,6 +36,9 @@ export const AdminCoursesView: React.FC = () => {
   const [materialFile, setMaterialFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadBytes, setUploadBytes] = useState({ loaded: 0, total: 0 });
+  const [uploadStatus, setUploadStatus] = useState('');
+  const activeUploadRef = useRef<XMLHttpRequest | null>(null);
   const [lessonError, setLessonError] = useState<string | null>(null);
 
   const fetchTree = async () => {
@@ -46,7 +50,7 @@ export const AdminCoursesView: React.FC = () => {
         setCourseTree(data);
       }
     } catch (e) {
-      console.error(e);
+      alert(e instanceof Error ? e.message : 'Não foi possível salvar o módulo.');
     } finally {
       setLoading(false);
     }
@@ -66,7 +70,7 @@ export const AdminCoursesView: React.FC = () => {
     if (!courseTree) return;
     try {
       if (editingModuleId) {
-        await fetch(`/api/admin/modules/${editingModuleId}`, {
+        const response = await fetch(`/api/admin/modules/${editingModuleId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -74,10 +78,12 @@ export const AdminCoursesView: React.FC = () => {
             description: moduleDesc,
             releaseType: moduleRule,
             releaseDays: moduleDays,
+            releaseDate: moduleDate || null,
           }),
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Não foi possível salvar o módulo.');
       } else {
-        await fetch('/api/admin/modules', {
+        const response = await fetch('/api/admin/modules', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -86,24 +92,27 @@ export const AdminCoursesView: React.FC = () => {
             description: moduleDesc,
             releaseType: moduleRule,
             releaseDays: moduleDays,
+            releaseDate: moduleDate || null,
           }),
         });
+        if (!response.ok) throw new Error((await response.json()).error || 'Não foi possível salvar o módulo.');
       }
       setModuleModalOpen(false);
       setEditingModuleId(null);
       fetchTree();
     } catch (e) {
-      console.error(e);
+      alert(e instanceof Error ? e.message : 'Não foi possível salvar o módulo.');
     }
   };
 
   const handleDeleteModule = async (moduleId: string) => {
     if (!confirm('Deseja excluir este módulo e todos os seus tópicos/aulas?')) return;
     try {
-      await fetch(`/api/admin/modules/${moduleId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/admin/modules/${moduleId}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error((await response.json()).error || 'Não foi possível excluir o módulo.');
       fetchTree();
     } catch (e) {
-      console.error(e);
+      alert(e instanceof Error ? e.message : 'Não foi possível excluir o módulo.');
     }
   };
 
@@ -144,7 +153,9 @@ export const AdminCoursesView: React.FC = () => {
     }
 
     setUploading(true);
-    setUploadProgress(20);
+    setUploadProgress(10);
+    setUploadBytes({ loaded: 0, total: videoFile?.size || 0 });
+    setUploadStatus('Salvando dados da aula...');
     setLessonError(null);
 
     try {
@@ -166,7 +177,7 @@ export const AdminCoursesView: React.FC = () => {
       if (!res.ok) {
         throw new Error(lessonData.error || 'Não foi possível cadastrar a aula.');
       }
-      setUploadProgress(50);
+      setUploadProgress(videoFile ? 20 : 85);
 
       // 2. If video file selected, upload video
       const savedLessonId = lessonData.lesson?.id || editingLessonId;
@@ -175,14 +186,28 @@ export const AdminCoursesView: React.FC = () => {
         formData.append('video', videoFile);
         formData.append('durationSeconds', lessonDuration.toString());
 
-        const uploadRes = await fetch(`/api/admin/lessons/${savedLessonId}/upload-video`, {
-          method: 'POST',
-          body: formData,
+        setUploadStatus('Enviando vídeo...');
+        const uploadData = await new Promise<any>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          activeUploadRef.current = xhr;
+          xhr.open('POST', `/api/admin/lessons/${savedLessonId}/upload-video`);
+          xhr.withCredentials = true;
+          xhr.upload.onprogress = event => {
+            if (!event.lengthComputable) return;
+            setUploadBytes({ loaded: event.loaded, total: event.total });
+            setUploadProgress(20 + Math.round((event.loaded / event.total) * 65));
+          };
+          xhr.onload = () => {
+            activeUploadRef.current = null;
+            let payload: any = {};
+            try { payload = JSON.parse(xhr.responseText || '{}'); } catch { /* handled below */ }
+            if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
+            else reject(new Error(payload.error || 'O upload do vídeo falhou.'));
+          };
+          xhr.onerror = () => { activeUploadRef.current = null; reject(new Error('Falha de conexão durante o upload.')); };
+          xhr.onabort = () => { activeUploadRef.current = null; reject(new Error('Upload cancelado.')); };
+          xhr.send(formData);
         });
-        const uploadData = await uploadRes.json();
-        if (!uploadRes.ok) {
-          throw new Error(uploadData.error || 'A aula foi criada, mas o upload do vídeo falhou.');
-        }
       }
 
       // 3. If a supplementary material was selected, upload it to the lesson
@@ -199,6 +224,7 @@ export const AdminCoursesView: React.FC = () => {
         }
       }
 
+      setUploadStatus(materialFile ? 'Enviando material complementar...' : 'Vídeo protegido com sucesso.');
       setUploadProgress(100);
       setLessonModalOpen(false);
       setEditingLessonId(null);
@@ -210,6 +236,7 @@ export const AdminCoursesView: React.FC = () => {
     } catch (e) {
       setLessonError(e instanceof Error ? e.message : 'Erro ao criar aula.');
     } finally {
+      activeUploadRef.current = null;
       setUploading(false);
     }
   };
@@ -217,10 +244,11 @@ export const AdminCoursesView: React.FC = () => {
   const handleDeleteLesson = async (lessonId: string) => {
     if (!confirm('Deseja excluir esta aula?')) return;
     try {
-      await fetch(`/api/admin/lessons/${lessonId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/admin/lessons/${lessonId}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error((await response.json()).error || 'Não foi possível excluir a aula.');
       fetchTree();
     } catch (e) {
-      console.error(e);
+      alert(e instanceof Error ? e.message : 'Não foi possível excluir a aula.');
     }
   };
 
@@ -252,6 +280,7 @@ export const AdminCoursesView: React.FC = () => {
             setModuleDesc('');
             setModuleRule('IMMEDIATE');
             setModuleDays(7);
+            setModuleDate('');
             setModuleModalOpen(true);
           }}
           className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-amber-900/20 cursor-pointer"
@@ -320,8 +349,9 @@ export const AdminCoursesView: React.FC = () => {
                     setEditingModuleId(module.id);
                     setModuleTitle(module.title);
                     setModuleDesc(module.description);
-                    setModuleRule(module.releaseRule);
+                    setModuleRule(['IMMEDIATE', 'AFTER_DAYS', 'FIXED_DATE', 'MANUAL'].includes(module.releaseRule) ? module.releaseRule as 'IMMEDIATE' | 'AFTER_DAYS' | 'FIXED_DATE' | 'MANUAL' : 'IMMEDIATE');
                     setModuleDays(module.releaseDays || 7);
+                    setModuleDate(module.releaseDate ? module.releaseDate.slice(0, 16) : '');
                     setModuleModalOpen(true);
                   }}
                   className="p-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-lg text-xs"
@@ -479,8 +509,13 @@ export const AdminCoursesView: React.FC = () => {
                     />
                     <span>Liberação Automática após 7 Dias (Padrão de Segurança)</span>
                   </label>
+                  <label className="flex items-center gap-2 text-neutral-300 cursor-pointer"><input type="radio" name="rule" value="FIXED_DATE" checked={moduleRule === 'FIXED_DATE'} onChange={() => setModuleRule('FIXED_DATE')} className="accent-amber-500" /><span>Liberar em data específica</span></label>
+                  <label className="flex items-center gap-2 text-neutral-300 cursor-pointer"><input type="radio" name="rule" value="MANUAL" checked={moduleRule === 'MANUAL'} onChange={() => setModuleRule('MANUAL')} className="accent-amber-500" /><span>Somente liberação manual</span></label>
                 </div>
               </div>
+
+              {moduleRule === 'AFTER_DAYS' && <input type="number" min="0" max="3650" value={moduleDays} onChange={e => setModuleDays(Number(e.target.value) || 0)} placeholder="Dias" className="w-full px-3 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />}
+              {moduleRule === 'FIXED_DATE' && <input type="datetime-local" required value={moduleDate} onChange={e => setModuleDate(e.target.value)} className="w-full px-3 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />}
 
               <div className="flex gap-2 pt-2">
                 <button
@@ -558,7 +593,7 @@ export const AdminCoursesView: React.FC = () => {
                 )}
                 <input
                   type="file"
-                  accept="video/*"
+                  accept=".mp4,video/mp4"
                   onChange={e => setVideoFile(e.target.files ? e.target.files[0] : null)}
                   className="w-full text-xs text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-neutral-800 file:text-neutral-200 hover:file:bg-neutral-700 cursor-pointer"
                 />
@@ -598,22 +633,23 @@ export const AdminCoursesView: React.FC = () => {
               {uploading && (
                 <div className="space-y-1 pt-1">
                   <div className="flex justify-between text-[11px] text-amber-400 font-semibold">
-                    <span>Processando e protegendo vídeo...</span>
+                    <span>{uploadStatus}</span>
                     <span>{uploadProgress}%</span>
                   </div>
                   <div className="w-full h-1.5 bg-neutral-950 rounded-full overflow-hidden">
                     <div className="h-full bg-amber-400 rounded-full" style={{ width: `${uploadProgress}%` }} />
                   </div>
+                  {uploadBytes.total > 0 && <p className="text-[10px] text-neutral-500">{(uploadBytes.loaded / 1048576).toFixed(1)} MB de {(uploadBytes.total / 1048576).toFixed(1)} MB enviados</p>}
                 </div>
               )}
 
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setLessonModalOpen(false)}
+                  onClick={() => { if (uploading) activeUploadRef.current?.abort(); else setLessonModalOpen(false); }}
                   className="flex-1 py-2.5 bg-neutral-800 text-neutral-300 rounded-xl font-semibold cursor-pointer"
                 >
-                  Cancelar
+                  {uploading ? 'Cancelar envio' : 'Cancelar'}
                 </button>
                 <button
                   type="submit"

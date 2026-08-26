@@ -103,6 +103,9 @@ studentRouter.get('/dashboard', (req: Request & { auth?: any }, res: Response): 
       brandTagline: db.systemSettings.brandTagline,
       supportEmail: db.systemSettings.supportEmail,
       noticeBanner: db.systemSettings.noticeBanner,
+      telegramGroupUrl: db.systemSettings.telegramGroupUrl || '',
+      telegramHelpMessage: db.systemSettings.telegramHelpMessage || '',
+      telegramButtonLabel: db.systemSettings.telegramButtonLabel || '',
     },
   });
 });
@@ -141,7 +144,7 @@ studentRouter.get('/course', (req: Request & { auth?: any }, res: Response): voi
                 description: les.description,
                 position: les.position,
                 durationSeconds: les.durationSeconds,
-                hasVideo: !!les.videoFileName || !!les.playbackId || true,
+                hasVideo: !!les.videoFileName || !!les.playbackId,
                 isFreePreview: les.isFreePreview,
                 access: accessLes,
                 isCompleted: progress?.isCompleted || false,
@@ -211,8 +214,15 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
   const mod = db.modules.find(m => m.id === lesson.moduleId);
   const top = db.topics.find(t => t.id === lesson.topicId);
 
-  // Find previous and next lessons
-  const allPublished = db.lessons.filter(l => l.status === 'PUBLISHED');
+  // Find previous and next accessible lessons in the canonical course/module/topic/lesson order.
+  const allPublished = db.lessons.filter(l => l.status === 'PUBLISHED' && l.courseId === lesson.courseId)
+    .sort((a, b) => {
+      const modA = db.modules.find(m => m.id === a.moduleId)?.position || 0;
+      const modB = db.modules.find(m => m.id === b.moduleId)?.position || 0;
+      const topA = db.topics.find(t => t.id === a.topicId)?.position || 0;
+      const topB = db.topics.find(t => t.id === b.topicId)?.position || 0;
+      return modA - modB || topA - topB || a.position - b.position;
+    }).filter(item => canUserAccessLesson(user.id, item.id).allowed);
   const currentIndex = allPublished.findIndex(l => l.id === lesson.id);
   const prevLesson = currentIndex > 0 ? { id: allPublished[currentIndex - 1].id, title: allPublished[currentIndex - 1].title } : null;
   const nextLesson = currentIndex >= 0 && currentIndex < allPublished.length - 1 ? { id: allPublished[currentIndex + 1].id, title: allPublished[currentIndex + 1].title } : null;
@@ -236,6 +246,7 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
       title: lesson.title,
       description: lesson.description,
       durationSeconds: lesson.durationSeconds,
+      hasVideo: Boolean(lesson.videoFileName || lesson.playbackId),
       supplementaryMaterials: lesson.supplementaryMaterials.map(({ storageFileName, ...material }) => material),
       module: { id: mod?.id, title: mod?.title },
       topic: { id: top?.id, title: top?.title },
@@ -248,6 +259,11 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
       provider: lesson.videoProvider,
     },
     watermark,
+    telegram: {
+      url: db.systemSettings.telegramGroupUrl || '',
+      message: db.systemSettings.telegramHelpMessage || '',
+      buttonLabel: db.systemSettings.telegramButtonLabel || '',
+    },
     progress: {
       isCompleted: progress?.isCompleted || false,
       progressPercent: progress?.progressPercent || 0,
@@ -259,7 +275,7 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
 // POST /api/student/progress
 studentRouter.post('/progress', (req: Request & { auth?: any }, res: Response): void => {
   const user = req.auth.user as User;
-  const { lessonId, positionSeconds, durationSeconds, manualCompleted } = req.body;
+  const { lessonId, positionSeconds, durationSeconds, manualCompleted, completionAction } = req.body;
 
   if (!lessonId) {
     res.status(400).json({ error: 'lessonId é obrigatório.' });
@@ -272,13 +288,17 @@ studentRouter.post('/progress', (req: Request & { auth?: any }, res: Response): 
     res.status(404).json({ error: 'Aula não encontrada.' });
     return;
   }
+  if (!canUserAccessLesson(user.id, lessonId).allowed) {
+    res.status(403).json({ error: 'Você não possui acesso a esta aula.' }); return;
+  }
 
   const duration = durationSeconds || lesson.durationSeconds || 600;
-  const pos = Math.max(0, positionSeconds || 0);
+  const pos = Math.min(Math.max(0, Number(positionSeconds) || 0), Math.max(Number(durationSeconds) || lesson.durationSeconds || 600, 1));
   const calculatedPercent = Math.min(100, Math.round((pos / duration) * 100));
 
   const completionThreshold = db.systemSettings.completionThresholdPercent || 90;
-  const isCompleted = manualCompleted !== undefined ? Boolean(manualCompleted) : calculatedPercent >= completionThreshold;
+  const requestedManualState = completionAction === 'MARK_COMPLETE' ? true : completionAction === 'MARK_INCOMPLETE' ? false : manualCompleted;
+  const isCompleted = requestedManualState !== undefined ? Boolean(requestedManualState) : calculatedPercent >= completionThreshold;
 
   let progress = db.lessonProgress.find(p => p.userId === user.id && p.lessonId === lessonId);
 
@@ -296,12 +316,12 @@ studentRouter.post('/progress', (req: Request & { auth?: any }, res: Response): 
     };
     db.lessonProgress.push(progress);
   } else {
+    const previousPosition = progress.lastPositionSeconds;
     progress.lastPositionSeconds = pos;
     progress.progressPercent = Math.max(progress.progressPercent, calculatedPercent);
-    if (isCompleted) {
-      progress.isCompleted = true;
-    }
-    progress.accessCount += 1;
+    if (completionAction === 'MARK_INCOMPLETE' || manualCompleted === false) progress.isCompleted = false;
+    else if (isCompleted) progress.isCompleted = true;
+    progress.watchedSeconds += Math.max(0, pos - previousPosition);
     progress.lastWatchedAt = new Date().toISOString();
   }
 

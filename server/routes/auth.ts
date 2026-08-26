@@ -75,6 +75,8 @@ authRouter.post('/login', credentialLimiter, (req: Request, res: Response): void
       id: session.id,
       deviceInfo: session.deviceInfo,
       lastActivityAt: session.lastActivityAt,
+      ipAddress: session.ipAddress,
+      device: session.deviceInfo,
     },
     token: rawToken, // Provided for Authorization header fallback
   });
@@ -107,6 +109,8 @@ authRouter.get('/me', (req: Request, res: Response): void => {
       deviceInfo: session.deviceInfo,
       createdAt: session.createdAt,
       lastActivityAt: session.lastActivityAt,
+      ipAddress: session.ipAddress,
+      device: session.deviceInfo,
     },
   });
 });

@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR } from '../db.js';
+import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, UPLOAD_TMP_DIR } from '../db.js';
 import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
 import { logAudit } from '../audit.js';
 import { sendSmtpTestEmail, sendWelcomeEmail } from '../email.js';
@@ -48,12 +48,7 @@ adminRouter.use(requireAdmin);
 
 // Configure multer for secure video and material uploads
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    if (!fs.existsSync(VIDEO_DIR)) {
-      fs.mkdirSync(VIDEO_DIR, { recursive: true });
-    }
-    cb(null, VIDEO_DIR);
-  },
+  destination: (_req, _file, cb) => cb(null, UPLOAD_TMP_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     const safeName = `vid_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${ext}`;
@@ -64,8 +59,10 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (_req, file, cb) => {
-    const allowed = ['video/mp4', 'video/webm', 'video/quicktime'].includes(file.mimetype);
-    cb(allowed ? null : new Error('Envie um vídeo MP4, WebM ou MOV válido.'), allowed);
+    const isMp4Name = path.extname(file.originalname).toLowerCase() === '.mp4';
+    const allowed = isMp4Name && ['video/mp4', 'application/octet-stream'].includes(file.mimetype);
+    if (!allowed) { cb(new Error('Envie somente um arquivo MP4 válido.')); return; }
+    cb(null, true);
   },
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB limit for videos
 });
@@ -83,6 +80,31 @@ function removeLessonVideo(lesson: Lesson): void {
   if (!lesson.videoFileName) return;
   const filePath = path.join(VIDEO_DIR, lesson.videoFileName);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
+function removeLessonMaterials(lesson: Lesson): void {
+  for (const material of lesson.supplementaryMaterials || []) {
+    if (!material.storageFileName) continue;
+    const filePath = path.join(MATERIAL_DIR, path.basename(material.storageFileName));
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+}
+
+function removeLessonsAndRelatedData(db: ReturnType<typeof readDb>, lessonIds: string[]): void {
+  const idSet = new Set(lessonIds);
+  db.lessons.filter(lesson => idSet.has(lesson.id)).forEach(lesson => { removeLessonVideo(lesson); removeLessonMaterials(lesson); });
+  db.lessons = db.lessons.filter(lesson => !idSet.has(lesson.id));
+  db.lessonProgress = db.lessonProgress.filter(progress => !idSet.has(progress.lessonId));
+  db.userContentOverrides = db.userContentOverrides.filter(override => !(override.contentType === 'LESSON' && idSet.has(override.contentId)));
+}
+
+function isMp4File(filePath: string): boolean {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const header = Buffer.alloc(12);
+    const bytes = fs.readSync(fd, header, 0, header.length, 0);
+    return bytes >= 12 && header.subarray(4, 8).toString('ascii') === 'ftyp';
+  } finally { fs.closeSync(fd); }
 }
 
 // GET /api/admin/metrics
@@ -792,6 +814,8 @@ adminRouter.post('/modules', (req: Request & { auth?: any }, res: Response): voi
     res.status(400).json({ error: 'Título do módulo é obrigatório.' });
     return;
   }
+  if (!['IMMEDIATE', 'AFTER_DAYS', 'FIXED_DATE', 'MANUAL'].includes(String(releaseType))) { res.status(400).json({ error: 'Regra de liberação inválida.' }); return; }
+  if (releaseType === 'FIXED_DATE' && (!releaseDate || Number.isNaN(new Date(releaseDate).getTime()))) { res.status(400).json({ error: 'Informe uma data válida para a liberação.' }); return; }
 
   const db = readDb();
   const cId = courseId || db.courses[0]?.id;
@@ -838,6 +862,8 @@ adminRouter.put('/modules/:id', (req: Request & { auth?: any }, res: Response): 
     res.status(404).json({ error: 'Módulo não encontrado.' });
     return;
   }
+  if (releaseType !== undefined && !['IMMEDIATE', 'AFTER_DAYS', 'FIXED_DATE', 'MANUAL'].includes(String(releaseType))) { res.status(400).json({ error: 'Regra de liberação inválida.' }); return; }
+  if (releaseDate !== undefined && releaseDate && Number.isNaN(new Date(releaseDate).getTime())) { res.status(400).json({ error: 'Data de liberação inválida.' }); return; }
 
   if (title) mod.title = String(title).trim();
   if (description !== undefined) mod.description = String(description).trim();
@@ -872,10 +898,11 @@ adminRouter.delete('/modules/:id', (req: Request & { auth?: any }, res: Response
     return;
   }
 
-  db.lessons.filter(l => l.moduleId === id).forEach(removeLessonVideo);
+  const removedLessonIds = db.lessons.filter(l => l.moduleId === id).map(l => l.id);
+  removeLessonsAndRelatedData(db, removedLessonIds);
   db.modules = db.modules.filter(m => m.id !== id);
   db.topics = db.topics.filter(t => t.moduleId !== id);
-  db.lessons = db.lessons.filter(l => l.moduleId !== id);
+  db.userContentOverrides = db.userContentOverrides.filter(override => !(override.contentType === 'MODULE' && override.contentId === id));
 
   writeDb(db);
 
@@ -934,8 +961,9 @@ adminRouter.delete('/topics/:id', (req: Request & { auth?: any }, res: Response)
   const db = readDb();
   const topic = db.topics.find(t => t.id === req.params.id);
   if (!topic) { res.status(404).json({ error: 'Tópico não encontrado.' }); return; }
+  const removedLessonIds = db.lessons.filter(l => l.topicId === topic.id).map(l => l.id);
+  removeLessonsAndRelatedData(db, removedLessonIds);
   db.topics = db.topics.filter(t => t.id !== topic.id);
-  db.lessons = db.lessons.filter(l => l.topicId !== topic.id);
   writeDb(db);
   res.json({ message: 'Tópico e suas aulas foram removidos.' });
 });
@@ -947,6 +975,7 @@ adminRouter.post('/lessons', (req: Request & { auth?: any }, res: Response): voi
     res.status(400).json({ error: 'Tópico, Módulo e Título são obrigatórios.' });
     return;
   }
+  if (durationSeconds !== undefined && (!Number.isFinite(Number(durationSeconds)) || Number(durationSeconds) <= 0)) { res.status(400).json({ error: 'A duração deve ser um número maior que zero.' }); return; }
 
   const db = readDb();
   const parentModule = db.modules.find(m => m.id === moduleId);
@@ -1004,6 +1033,8 @@ adminRouter.put('/lessons/:id', (req: Request & { auth?: any }, res: Response): 
     res.status(404).json({ error: 'Aula não encontrada.' });
     return;
   }
+  if (durationSeconds !== undefined && (!Number.isFinite(Number(durationSeconds)) || Number(durationSeconds) <= 0)) { res.status(400).json({ error: 'A duração deve ser um número maior que zero.' }); return; }
+  if (releaseType !== undefined && !['INHERIT', 'IMMEDIATE', 'AFTER_DAYS', 'FIXED_DATE', 'MANUAL'].includes(String(releaseType))) { res.status(400).json({ error: 'Regra de liberação inválida.' }); return; }
 
   if (title) lesson.title = String(title).trim();
   if (description !== undefined) lesson.description = String(description).trim();
@@ -1055,9 +1086,7 @@ adminRouter.delete('/lessons/:id', (req: Request & { auth?: any }, res: Response
     return;
   }
 
-  removeLessonVideo(lesson);
-  db.lessons = db.lessons.filter(l => l.id !== id);
-  db.lessonProgress = db.lessonProgress.filter(p => p.lessonId !== id);
+  removeLessonsAndRelatedData(db, [id]);
   writeDb(db);
 
   logAudit({
@@ -1083,6 +1112,12 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), (req: Requ
     return;
   }
 
+  if (!isMp4File(file.path)) {
+    fs.unlinkSync(file.path);
+    res.status(400).json({ error: 'O arquivo não possui uma assinatura MP4 válida.' });
+    return;
+  }
+
   const db = readDb();
   const lesson = db.lessons.find(l => l.id === id);
   if (!lesson) {
@@ -1092,19 +1127,33 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), (req: Requ
     return;
   }
 
-  // Delete old file if existed
-  if (lesson.videoFileName) {
-    const oldPath = path.join(VIDEO_DIR, lesson.videoFileName);
-    if (fs.existsSync(oldPath)) {
-      try { fs.unlinkSync(oldPath); } catch (e) {}
-    }
+  const finalPath = path.join(VIDEO_DIR, file.filename);
+  // Docker mounts data and videos as separate volumes; rename can therefore
+  // fail with EXDEV. Copy first, verify size, then remove the temporary file.
+  fs.copyFileSync(file.path, finalPath);
+  if (fs.statSync(finalPath).size !== file.size) {
+    fs.unlinkSync(finalPath);
+    fs.unlinkSync(file.path);
+    res.status(500).json({ error: 'Não foi possível validar o arquivo enviado.' });
+    return;
   }
-
+  fs.unlinkSync(file.path);
+  const oldFileName = lesson.videoFileName;
   lesson.videoFileName = file.filename;
   lesson.videoSizeBytes = file.size;
   lesson.videoUploadedAt = new Date().toISOString();
   lesson.videoProvider = 'LOCAL_SECURE';
-  writeDb(db);
+  try {
+    writeDb(db);
+  } catch (error) {
+    lesson.videoFileName = oldFileName;
+    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+    throw error;
+  }
+  if (oldFileName) {
+    const oldPath = path.join(VIDEO_DIR, oldFileName);
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+  }
 
   logAudit({
     actorId: req.auth.user.id,
@@ -1212,6 +1261,26 @@ adminRouter.get('/settings', (req: Request, res: Response): void => {
 adminRouter.put('/settings', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
   const db = readDb();
   const { smtp, ...generalSettings } = req.body || {};
+  if (generalSettings.telegramGroupUrl !== undefined) {
+    const url = String(generalSettings.telegramGroupUrl || '').trim();
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' || !['t.me', 'telegram.me', 'www.telegram.me'].includes(parsed.hostname)) throw new Error();
+      } catch {
+        res.status(400).json({ error: 'Informe um link HTTPS válido de t.me ou telegram.me.' }); return;
+      }
+    }
+    generalSettings.telegramGroupUrl = url;
+  }
+  if (generalSettings.telegramHelpMessage !== undefined) {
+    generalSettings.telegramHelpMessage = String(generalSettings.telegramHelpMessage).trim();
+    if (generalSettings.telegramHelpMessage.length > 300) { res.status(400).json({ error: 'A mensagem do Telegram deve ter no máximo 300 caracteres.' }); return; }
+  }
+  if (generalSettings.telegramButtonLabel !== undefined) {
+    generalSettings.telegramButtonLabel = String(generalSettings.telegramButtonLabel).trim();
+    if (generalSettings.telegramButtonLabel.length > 40) { res.status(400).json({ error: 'O texto do botão deve ter no máximo 40 caracteres.' }); return; }
+  }
   if (smtp && !requireSuperAdmin(req, res)) return;
   db.systemSettings = {
     ...db.systemSettings,

@@ -63,6 +63,9 @@ export interface SystemSettings {
   watermarkIntervalSeconds: number;
   watermarkOpacity: number;
   noticeBanner?: string | null;
+  telegramGroupUrl?: string;
+  telegramHelpMessage?: string;
+  telegramButtonLabel?: string;
   smtp: {
     host: string;
     port: number;
@@ -103,6 +106,8 @@ export interface SessionInfo {
   deviceInfo: string;
   createdAt?: string;
   lastActivityAt: string;
+  ipAddress?: string;
+  device?: string;
 }
 
 export interface WatermarkData {
@@ -168,6 +173,7 @@ export interface ModuleSummary {
   releaseType: 'IMMEDIATE' | 'AFTER_DAYS' | 'FIXED_DATE' | 'MANUAL';
   releaseRule?: 'IMMEDIATE' | 'AFTER_DAYS' | 'FIXED_DATE' | 'MANUAL';
   releaseDays: number;
+  releaseDate?: string | null;
   access: LessonAccess;
   topics: TopicSummary[];
 }
@@ -207,6 +213,9 @@ export interface StudentDashboardData {
     brandTagline: string;
     supportEmail: string;
     noticeBanner: string | null;
+    telegramGroupUrl?: string;
+    telegramHelpMessage?: string;
+    telegramButtonLabel?: string;
   };
 }
 
@@ -215,6 +224,7 @@ export interface LessonDetail {
   title: string;
   description: string;
   durationSeconds: number;
+  hasVideo?: boolean;
   supplementaryMaterials: SupplementaryMaterial[];
   module: { id: string; title: string };
   topic: { id: string; title: string };

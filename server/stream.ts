@@ -78,14 +78,6 @@ export function handleStreamRequest(req: Request, res: Response): void {
   // Check if physical video exists on server
   let videoPath = lesson.videoFileName ? path.join(VIDEO_DIR, lesson.videoFileName) : null;
 
-  if (!videoPath || !fs.existsSync(videoPath)) {
-    // If no video was uploaded yet, check if there's a demo sample or serve a generated placeholder
-    const samplePath = path.join(VIDEO_DIR, 'sample.mp4');
-    if (fs.existsSync(samplePath)) {
-      videoPath = samplePath;
-    }
-  }
-
   // Security headers to prevent indexing & caching in unsafe intermediaries
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
@@ -101,7 +93,12 @@ export function handleStreamRequest(req: Request, res: Response): void {
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const requestedEnd = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const end = Math.min(requestedEnd, fileSize - 1);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= fileSize || end < start) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+        return;
+      }
       const chunkSize = end - start + 1;
       const file = fs.createReadStream(videoPath, { start, end });
 
@@ -120,12 +117,6 @@ export function handleStreamRequest(req: Request, res: Response): void {
       fs.createReadStream(videoPath).pipe(res);
     }
   } else {
-    // Return structured video fallback or dynamic manifest
-    res.status(200).json({
-      status: 'DEMO_STREAM_READY',
-      message: 'Vídeo institucional demonstrativo ativo. Faça upload do arquivo MP4 no painel administrativo.',
-      lessonId: lesson.id,
-      title: lesson.title,
-    });
+    res.status(404).json({ error: 'Vídeo ainda não está disponível para esta aula.' });
   }
 }

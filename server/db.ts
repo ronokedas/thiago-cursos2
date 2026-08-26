@@ -156,6 +156,9 @@ export interface SystemSettings {
   watermarkIntervalSeconds: number;
   brandTagline: string;
   noticeBanner: string | null;
+  telegramGroupUrl?: string;
+  telegramHelpMessage?: string;
+  telegramButtonLabel?: string;
   smtp: {
     host: string;
     port: number;
@@ -187,6 +190,7 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const VIDEO_DIR = path.join(DATA_DIR, 'videos');
 const MATERIAL_DIR = path.join(DATA_DIR, 'materials');
+const UPLOAD_TMP_DIR = path.join(DATA_DIR, 'uploads');
 let databaseCache: DatabaseSchema | null = null;
 
 export function initDatabase(): void {
@@ -197,6 +201,13 @@ export function initDatabase(): void {
     fs.mkdirSync(VIDEO_DIR, { recursive: true });
   }
   if (!fs.existsSync(MATERIAL_DIR)) fs.mkdirSync(MATERIAL_DIR, { recursive: true });
+  if (!fs.existsSync(UPLOAD_TMP_DIR)) fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
+  for (const entry of fs.readdirSync(UPLOAD_TMP_DIR)) {
+    const filePath = path.join(UPLOAD_TMP_DIR, entry);
+    try {
+      if (Date.now() - fs.statSync(filePath).mtimeMs > 24 * 60 * 60 * 1000) fs.unlinkSync(filePath);
+    } catch { /* a concurrent upload may disappear between stat and cleanup */ }
+  }
 
   if (!fs.existsSync(DB_FILE)) {
     const initialData: DatabaseSchema = {
@@ -222,6 +233,9 @@ export function initDatabase(): void {
         watermarkIntervalSeconds: 15,
         brandTagline: 'Estratégia • Disciplina • Consistência • Resultados',
         noticeBanner: null,
+        telegramGroupUrl: '',
+        telegramHelpMessage: 'Ficou com alguma dúvida sobre esta aula? Entre no grupo e fale com a equipe.',
+        telegramButtonLabel: 'Entrar no grupo do Telegram',
         smtp: {
           host: process.env.SMTP_HOST || '',
           port: Number(process.env.SMTP_PORT || 587),
@@ -241,7 +255,7 @@ export function readDb(): DatabaseSchema {
   initDatabase();
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    databaseCache = JSON.parse(raw) as DatabaseSchema;
+    databaseCache = normalizeDatabase(JSON.parse(raw) as DatabaseSchema);
     return databaseCache;
   } catch (err) {
     console.error('Error reading database file, returning default structure:', err);
@@ -268,6 +282,12 @@ export function readDb(): DatabaseSchema {
         watermarkIntervalSeconds: 15,
         brandTagline: 'Estratégia • Disciplina • Consistência • Resultados',
         noticeBanner: null,
+        telegramGroupUrl: '',
+        telegramHelpMessage: 'Ficou com alguma dúvida sobre esta aula? Entre no grupo e fale com a equipe.',
+        telegramButtonLabel: 'Entrar no grupo do Telegram',
+        smtp: {
+          host: process.env.SMTP_HOST || '', port: Number(process.env.SMTP_PORT || 587), secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true', username: process.env.SMTP_USER || '', from: process.env.SMTP_FROM || 'Mentoria A Mecânica <no-reply@localhost>', passwordConfigured: Boolean(process.env.SMTP_PASSWORD),
+        },
       },
     };
     return databaseCache;
@@ -276,7 +296,19 @@ export function readDb(): DatabaseSchema {
 
 export async function hydrateDatabaseFromPostgres(): Promise<void> {
   const state = await loadPostgresState();
-  if (state) databaseCache = state;
+  if (state) databaseCache = normalizeDatabase(state);
+}
+
+function normalizeDatabase(data: DatabaseSchema): DatabaseSchema {
+  const settings = data.systemSettings || ({} as SystemSettings);
+  data.systemSettings = {
+    ...settings,
+    id: settings.id || 'settings-default',
+    telegramGroupUrl: settings.telegramGroupUrl || '',
+    telegramHelpMessage: settings.telegramHelpMessage || 'Ficou com alguma dúvida sobre esta aula? Entre no grupo e fale com a equipe.',
+    telegramButtonLabel: settings.telegramButtonLabel || 'Entrar no grupo do Telegram',
+  };
+  return data;
 }
 
 export function writeDb(data: DatabaseSchema): void {
@@ -293,4 +325,4 @@ export async function writeDbAndWait(data: DatabaseSchema): Promise<void> {
   await waitForPostgresPersistence();
 }
 
-export { DATA_DIR, VIDEO_DIR, MATERIAL_DIR, DB_FILE };
+export { DATA_DIR, VIDEO_DIR, MATERIAL_DIR, UPLOAD_TMP_DIR, DB_FILE };

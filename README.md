@@ -73,4 +73,9 @@ Teste de upload e streaming MP4:
 npm run test:video
 ```
 
+Uploads de vídeo aceitam somente MP4 (até 1 GB) e exibem progresso real no painel.
+O atalho global do grupo de dúvidas do Telegram pode ser configurado em
+**Configurações → Grupo de dúvidas no Telegram**; deixando o link vazio, o bloco
+não aparece para os alunos.
+
 Production deployment documentation is available in [deploy/README.md](C:\aulas-online\deploy\README.md).

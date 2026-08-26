@@ -4,10 +4,15 @@ import { logAudit } from './audit.js';
 
 export function seedDatabase(): void {
   const db = readDb();
+  const isProduction = process.env.NODE_ENV === 'production';
+  const seedDemoData = process.env.SEED_DEMO_DATA === 'true';
 
   // 1. Seed Super Admin if not exists
   let admin = db.users.find(u => u.role === 'SUPER_ADMIN' || u.role === 'ADMIN');
   if (!admin) {
+    if (isProduction && !process.env.INITIAL_ADMIN_PASSWORD) {
+      throw new Error('INITIAL_ADMIN_PASSWORD é obrigatória para criar o primeiro administrador em produção.');
+    }
     const adminUser: User = {
       id: 'usr_admin_master',
       name: 'Trader Thiago — Administrador',
@@ -30,7 +35,7 @@ export function seedDatabase(): void {
 
   // 2. Seed Demo Student if not exists
   let demoStudent = db.users.find(u => u.email === 'aluno@mecanica.com');
-  if (!demoStudent) {
+  if (seedDemoData && !demoStudent) {
     const now = new Date();
     // Start date 2 days ago so we can demonstrate the 7-day rule (5 days remaining)
     const startDate = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
@@ -55,7 +60,7 @@ export function seedDatabase(): void {
   }
 
   // 3. Seed Main Course if not exists
-  if (db.courses.length === 0) {
+  if (seedDemoData && db.courses.length === 0) {
     const course: Course = {
       id: 'crs_mecanica_master',
       title: 'Mentoria A Mecânica — Trader Thiago',

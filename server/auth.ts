@@ -6,6 +6,7 @@ import { logAudit } from './audit.js';
 const ITERATIONS = 100000;
 const KEY_LEN = 64;
 const DIGEST = 'sha512';
+const lastSessionTouch = new Map<string, number>();
 
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -168,9 +169,14 @@ export function extractAuth(req: Request): AuthContext | null {
     return null;
   }
 
-  // Update session lastActivityAt
-  session.lastActivityAt = new Date().toISOString();
-  writeDb(db);
+  // Avoid rewriting the complete JSON/Postgres state for every video range request.
+  const nowMs = Date.now();
+  const lastTouch = lastSessionTouch.get(session.id) || 0;
+  if (nowMs - lastTouch >= 60_000) {
+    session.lastActivityAt = new Date(nowMs).toISOString();
+    lastSessionTouch.set(session.id, nowMs);
+    writeDb(db);
+  }
 
   return { user, session };
 }
