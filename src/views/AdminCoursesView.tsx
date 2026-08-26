@@ -575,7 +575,7 @@ export const AdminCoursesView: React.FC = () => {
             </div>
 
             <form onSubmit={handleCreateLesson} className="flex min-h-0 flex-1 flex-col text-xs">
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-scroll overscroll-contain px-5 py-4 sm:px-7">
+              <div className="h-[calc(100vh-9rem)] min-h-0 flex-none space-y-4 overflow-y-scroll overscroll-contain px-5 py-4 sm:px-7">
               <div className="space-y-1">
                 <label className="font-semibold text-neutral-300">Título da Aula *</label>
                 <input
