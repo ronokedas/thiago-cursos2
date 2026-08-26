@@ -280,7 +280,11 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
       description: lesson.description,
       durationSeconds: lesson.durationSeconds,
       hasVideo: Boolean(lesson.videoFileName || lesson.playbackId),
-      supplementaryMaterials: lesson.supplementaryMaterials.map(({ storageFileName, ...material }) => material),
+      // Seed/demo records may contain only descriptive placeholders. Show a
+      // material to the student only when a real private file was uploaded.
+      supplementaryMaterials: lesson.supplementaryMaterials
+        .filter(material => Boolean(material.storageFileName) && fs.existsSync(path.join(MATERIAL_DIR, path.basename(material.storageFileName!))))
+        .map(({ storageFileName, ...material }) => material),
       practicalVideos: lesson.practicalVideos.map(({ videoFileName, ...video }) => video),
       imageExercises: lesson.imageExercises.map(exercise => ({
         id: exercise.id, title: exercise.title, description: exercise.description, position: exercise.position,
