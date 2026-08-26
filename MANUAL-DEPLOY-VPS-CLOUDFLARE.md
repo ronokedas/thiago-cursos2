@@ -207,17 +207,41 @@ Acesse https://thiago-trader.4dtech.com.br, entre com o administrador definido n
 
 ## 9. Atualizar depois
 
-Faça backup antes de atualizar:
+Sempre que uma nova versão for publicada na branch `main`, use este roteiro
+direto no SSH da VPS. Você pode executar os comandos estando em qualquer
+diretório; o primeiro `cd` leva até a instalação correta:
 
 ~~~
 cd /opt/aulas-online
 sudo bash ./scripts/backup.sh
-git fetch origin
-git switch main
-git pull --ff-only origin main
+sudo git fetch origin
+sudo git switch main
+sudo git pull --ff-only origin main
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up --build -d
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
 ~~~
+
+Se o Git informar que existem alterações locais, não use `reset` sem confirmar
+antes. Verifique o que mudou com:
+
+~~~
+cd /opt/aulas-online
+sudo git status
+sudo git diff
+~~~
+
+Após a atualização, confira se os serviços estão saudáveis e veja os últimos
+logs da aplicação:
+
+~~~
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml logs --tail=100 app
+curl -I https://thiago-trader.4dtech.com.br
+~~~
+
+O esperado é o container `app` como `healthy` e uma resposta HTTP normal do
+domínio. O arquivo `.env` e os volumes de dados não são substituídos pelo
+`git pull`; eles permanecem na VPS.
 
 Nunca use `sudo docker compose down -v`, pois isso pode remover volumes persistentes.
 
