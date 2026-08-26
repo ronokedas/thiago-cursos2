@@ -1445,13 +1445,16 @@ adminRouter.put('/settings', async (req: Request & { auth?: any }, res: Response
     generalSettings.telegramButtonLabel = String(generalSettings.telegramButtonLabel).trim();
     if (generalSettings.telegramButtonLabel.length > 40) { res.status(400).json({ error: 'O texto do botão deve ter no máximo 40 caracteres.' }); return; }
   }
-  if (smtp && !requireSuperAdmin(req, res)) return;
+  // Administrators can keep platform communications updated. SMTP itself
+  // remains exclusive to the super administrator, but its presence in a full
+  // settings form must not block unrelated fields such as Telegram.
+  const canUpdateSmtp = req.auth?.user?.role === 'SUPER_ADMIN';
   db.systemSettings = {
     ...db.systemSettings,
     ...generalSettings,
     id: 'settings-default',
   };
-  if (smtp) {
+  if (smtp && canUpdateSmtp) {
     const previous = db.systemSettings.smtp || { host: '', port: 587, secure: false, username: '', from: '', passwordConfigured: false };
     const nextPassword = String(smtp.password || '');
     db.systemSettings.smtp = {
@@ -1471,7 +1474,7 @@ adminRouter.put('/settings', async (req: Request & { auth?: any }, res: Response
     action: 'UPDATE_SETTINGS',
     entityType: 'SETTINGS',
     entityId: 'settings-default',
-    details: { generalSettingsUpdated: Object.keys(generalSettings), smtpUpdated: Boolean(smtp) },
+    details: { generalSettingsUpdated: Object.keys(generalSettings), smtpUpdated: Boolean(smtp && canUpdateSmtp) },
   });
 
   const { encryptedPassword: _encryptedPassword, ...safeSmtp } = db.systemSettings.smtp || {};

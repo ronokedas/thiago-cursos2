@@ -9,6 +9,7 @@ export const AdminSettingsView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [admins, setAdmins] = useState<any[]>([]);
   const [adminForm, setAdminForm] = useState({ name: '', email: '', phone: '', password: '', autoGeneratePassword: true });
   const [adminSaving, setAdminSaving] = useState(false);
@@ -56,6 +57,7 @@ export const AdminSettingsView: React.FC = () => {
 
     setSaving(true);
     setSavedSuccess(false);
+    setSettingsMessage(null);
 
     try {
       const res = await fetch('/api/admin/settings', {
@@ -64,14 +66,19 @@ export const AdminSettingsView: React.FC = () => {
         body: (() => { const { smtpPassword, ...safeSettings } = settings; return JSON.stringify({ ...safeSettings, smtp: { ...settings.smtp, password: smtpPassword || '' } }); })(),
       });
 
+      const raw = await res.text();
+      let data: any = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch { data = { error: `Resposta inválida do servidor (${res.status}).` }; }
       if (res.ok) {
-        const data = await res.json();
         setSettings({ ...data.settings, smtpPassword: '' });
         setSavedSuccess(true);
+        setSettingsMessage({ type: 'success', text: data.message || 'Configurações salvas com sucesso.' });
         setTimeout(() => setSavedSuccess(false), 3000);
+      } else {
+        setSettingsMessage({ type: 'error', text: data.error || 'Não foi possível salvar as configurações.' });
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      setSettingsMessage({ type: 'error', text: 'Erro de conexão ao salvar as configurações.' });
     } finally {
       setSaving(false);
     }
@@ -179,6 +186,11 @@ export const AdminSettingsView: React.FC = () => {
         <div className={`p-4 rounded-2xl text-xs font-semibold flex items-center gap-2.5 ${adminMessage.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}`}>
           {adminMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
           <span>{adminMessage.text}</span>
+        </div>
+      )}
+      {settingsMessage && (
+        <div className={`flex items-center gap-2 rounded-xl border px-4 py-3 text-xs font-medium ${settingsMessage.type === 'success' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-300'}`}>
+          {settingsMessage.type === 'success' ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}<span>{settingsMessage.text}</span>
         </div>
       )}
 
