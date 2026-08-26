@@ -12,7 +12,7 @@ interface StudentLessonViewProps {
   onBackToDashboard: () => void;
 }
 
-const CorrectedImageViewer: React.FC<{ image: { title: string; url: string }; watermark: WatermarkData; onBack: () => void }> = ({ image, watermark, onBack }) => {
+const CorrectedImageViewer: React.FC<{ image: { title: string; url: string }; onBack: () => void }> = ({ image, onBack }) => {
   const [zoom, setZoom] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
   const viewerRef = React.useRef<HTMLDivElement>(null);
@@ -20,7 +20,6 @@ const CorrectedImageViewer: React.FC<{ image: { title: string; url: string }; wa
   return <div ref={viewerRef} className="relative aspect-video overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950">
     <div className="absolute left-3 right-3 top-3 z-20 flex items-center justify-between"><button type="button" onClick={onBack} className="inline-flex items-center gap-1 rounded-lg bg-black/70 px-3 py-2 text-xs font-bold text-white"><X className="h-4 w-4" />Voltar ao vídeo</button><div className="flex gap-2"><button type="button" onClick={() => setZoom(value => Math.max(1, value - .25))} className="rounded-lg bg-black/70 px-3 py-2 text-xs text-white">−</button><button type="button" onClick={() => setZoom(value => Math.min(3, value + .25))} className="rounded-lg bg-black/70 px-3 py-2 text-xs text-white">+</button><button type="button" onClick={toggleFullscreen} className="rounded-lg bg-black/70 p-2 text-white"><Maximize className="h-4 w-4" /></button></div></div>
     <img src={image.url} alt={`Correção: ${image.title}`} draggable className="h-full w-full object-contain transition-transform duration-200" style={{ transform: `scale(${zoom})` }} />
-    {watermark.enabled && <div className="pointer-events-none absolute left-[18%] top-[46%] z-10 rotate-[-14deg] rounded bg-black/45 px-3 py-2 font-mono text-xs text-white/80">{watermark.userName} • {watermark.userMaskedEmail} • IP {watermark.clientIp}<br />Conteúdo exclusivo — captura rastreável</div>}
     <div className="absolute bottom-3 left-3 rounded bg-black/65 px-3 py-2 text-xs text-neutral-200">{image.title} · visualização protegida</div>
   </div>;
 };
@@ -245,7 +244,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
           </section>}
 
           {/* Custom Video Player with Floating Watermark */}
-          {correctedImage ? <CorrectedImageViewer image={correctedImage} watermark={lessonData.watermark} onBack={() => setCorrectedImage(null)} /> : practicalStream ? <VideoPlayer streamUrl={practicalStream.streamUrl} lessonId={`${lessonData.lesson.id}:${practicalStream.id}`} lessonTitle={practicalStream.title} durationSeconds={practicalStream.durationSeconds} initialPositionSeconds={0} watermark={lessonData.watermark} isCompleted={false} trackProgress={false} /> : lessonData.lesson.hasVideo === false ? <div className="aspect-video rounded-2xl border border-neutral-800 bg-neutral-950 flex flex-col items-center justify-center gap-3 text-center p-6">
+          {correctedImage ? <CorrectedImageViewer image={correctedImage} onBack={() => setCorrectedImage(null)} /> : practicalStream ? <VideoPlayer streamUrl={practicalStream.streamUrl} lessonId={`${lessonData.lesson.id}:${practicalStream.id}`} lessonTitle={practicalStream.title} durationSeconds={practicalStream.durationSeconds} initialPositionSeconds={0} watermark={lessonData.watermark} isCompleted={false} trackProgress={false} /> : lessonData.lesson.hasVideo === false ? <div className="aspect-video rounded-2xl border border-neutral-800 bg-neutral-950 flex flex-col items-center justify-center gap-3 text-center p-6">
             <AlertCircle className="h-8 w-8 text-amber-400" />
             <p className="text-sm font-semibold text-white">Vídeo ainda não disponível</p>
             <p className="text-xs text-neutral-400">O administrador ainda precisa concluir o upload desta aula.</p>
