@@ -45,11 +45,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [completedState, setCompletedState] = useState(isCompleted);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [bufferedEnd, setBufferedEnd] = useState(0);
+  const [isBuffering, setIsBuffering] = useState(false);
   const currentTimeRef = useRef(currentTime);
   const durationRef = useRef(duration);
   const completedRef = useRef(completedState);
   const progressCallbackRef = useRef(onProgressUpdate);
   const completedCallbackRef = useRef(onLessonCompleted);
+  const resumeAppliedRef = useRef<string | null>(null);
+  const playRequestedRef = useRef(false);
+  const bufferTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
   useEffect(() => { durationRef.current = duration; }, [duration]);
@@ -82,13 +87,67 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return () => clearInterval(interval);
   }, [watermark]);
 
-  // Handle Initial Position
+  // The resume position must be applied once only. Progress saves update the
+  // parent state every few seconds and must never seek playback backwards.
   useEffect(() => {
-    if (videoRef.current && initialPositionSeconds > 0) {
-      videoRef.current.currentTime = initialPositionSeconds;
-      setCurrentTime(initialPositionSeconds);
+    resumeAppliedRef.current = null;
+    setBufferedEnd(0);
+    setStreamError(null);
+  }, [lessonId, streamUrl]);
+
+  useEffect(() => () => { if (bufferTimeoutRef.current) clearTimeout(bufferTimeoutRef.current); }, []);
+
+  const getBufferedAhead = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.buffered.length === 0) return 0;
+    for (let index = 0; index < video.buffered.length; index++) {
+      if (video.currentTime >= video.buffered.start(index) && video.currentTime <= video.buffered.end(index)) {
+        return Math.max(0, video.buffered.end(index) - video.currentTime);
+      }
     }
-  }, [lessonId, initialPositionSeconds]);
+    return 0;
+  }, []);
+
+  const syncBuffer = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let end = video.currentTime;
+    for (let index = 0; index < video.buffered.length; index++) {
+      if (video.currentTime >= video.buffered.start(index) && video.currentTime <= video.buffered.end(index)) end = video.buffered.end(index);
+    }
+    setBufferedEnd(end);
+  }, []);
+
+  const startPlayback = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    playRequestedRef.current = false;
+    if (bufferTimeoutRef.current) clearTimeout(bufferTimeoutRef.current);
+    bufferTimeoutRef.current = null;
+    video.play().then(() => {
+      setIsPlaying(true);
+      setIsBuffering(false);
+    }).catch(error => {
+      setIsBuffering(false);
+      console.log('Playback prevented:', error);
+    });
+  }, []);
+
+  const requestPlayback = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const ahead = getBufferedAhead();
+    if (ahead >= 8 || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      startPlayback();
+      return;
+    }
+    playRequestedRef.current = true;
+    setIsBuffering(true);
+    if (bufferTimeoutRef.current) clearTimeout(bufferTimeoutRef.current);
+    bufferTimeoutRef.current = setTimeout(() => {
+      if (playRequestedRef.current) startPlayback();
+    }, 5000);
+  }, [getBufferedAhead, startPlayback]);
 
   const saveProgress = useCallback((forceCompleted?: boolean) => {
     const pos = Math.floor(videoRef.current?.currentTime ?? currentTimeRef.current);
@@ -118,10 +177,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setIsPlaying(false);
       saveProgress();
     } else {
-      videoRef.current.play().catch(e => console.log('Autoplay prevented:', e));
-      setIsPlaying(true);
+      requestPlayback();
     }
-  }, [isPlaying, saveProgress]);
+  }, [isPlaying, saveProgress, requestPlayback]);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
@@ -134,6 +192,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
 
     if ((curr / dur) >= 0.9 && !completedRef.current) saveProgress(true);
+  };
+
+  const handleLoadedMetadata = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const resumeKey = `${lessonId}:${streamUrl}`;
+    if (resumeAppliedRef.current !== resumeKey) {
+      resumeAppliedRef.current = resumeKey;
+      const resumePosition = Math.max(0, Math.min(initialPositionSeconds || 0, Math.max(0, video.duration - 1)));
+      if (resumePosition > 0) video.currentTime = resumePosition;
+      setCurrentTime(resumePosition);
+    }
+    if (Number.isFinite(video.duration)) setDuration(Math.floor(video.duration));
+    syncBuffer();
+  };
+
+  const handleBufferProgress = () => {
+    syncBuffer();
+    const video = videoRef.current;
+    if (playRequestedRef.current && video && (getBufferedAhead() >= 8 || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA)) startPlayback();
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -229,6 +307,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           ref={videoRef}
           src={streamUrl}
           onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onProgress={handleBufferProgress}
+          onCanPlay={handleBufferProgress}
+          onWaiting={() => { if (isPlaying) setIsBuffering(true); }}
+          onStalled={() => { if (isPlaying) setIsBuffering(true); }}
+          onSeeking={() => setIsBuffering(true)}
+          onPlaying={() => setIsBuffering(false)}
           onEnded={() => {
             setIsPlaying(false);
             setCompletedState(true);
@@ -238,7 +323,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onClick={togglePlay}
           className="w-full h-full object-contain cursor-pointer"
           playsInline
+          preload="auto"
         />
+
+        {isBuffering && !streamError && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/45 pointer-events-none">
+            <div className="rounded-xl border border-amber-500/30 bg-neutral-950/90 px-4 py-3 text-xs font-semibold text-amber-300 shadow-xl">Preparando vídeo…</div>
+          </div>
+        )}
 
         {streamError && (
           <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-neutral-950/95 p-6 text-center">
@@ -295,14 +387,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         >
           {/* Progress Scrubber */}
           <div className="flex items-center gap-2 mb-3">
+            <div className="relative w-full h-2.5 flex items-center">
+              <div className="absolute left-0 h-1.5 rounded-lg bg-neutral-500/70" style={{ width: `${Math.min(100, (bufferedEnd / Math.max(duration || 1, 1)) * 100)}%` }} />
             <input
               type="range"
               min="0"
               max={duration || 100}
               value={currentTime}
               onChange={handleSeek}
-              className="w-full h-1.5 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-amber-500 hover:h-2.5 transition-all"
+              className="relative z-10 w-full h-1.5 bg-neutral-700/70 rounded-lg appearance-none cursor-pointer accent-amber-500 hover:h-2.5 transition-all"
             />
+            </div>
           </div>
 
           <div className="flex items-center justify-between">

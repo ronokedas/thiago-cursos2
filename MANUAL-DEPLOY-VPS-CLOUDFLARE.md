@@ -161,6 +161,21 @@ server {
     ssl_certificate_key /etc/ssl/cloudflare/thiago-trader/origin.key;
     client_max_body_size 1G;
 
+    # Streaming protegido por Range: não deixe o Nginx criar buffer em disco.
+    location ^~ /api/stream/video/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
@@ -187,6 +202,11 @@ sudo systemctl reload nginx
 
 No Cloudflare, em **SSL/TLS → Overview**, selecione **Full (strict)**.
 O certificado Origin não deve ser enviado ao GitHub.
+
+Em **Rules → Cache Rules**, crie uma regra para o caminho
+`/api/stream/*` com ação **Bypass cache**. Isso mantém tickets e respostas
+HTTP Range privados, enquanto o navegador continua carregando o buffer do
+vídeo localmente.
 
 ## 8. Subir a aplicação
 
@@ -327,7 +347,35 @@ Depois da restauração, configure o Nginx, gere um novo certificado Origin no
 Cloudflare, aponte o DNS para o novo IP e valide login, alunos, vídeos, PDFs,
 progresso e SMTP. O certificado privado da VPS antiga não é incluído no backup.
 
-## 11. Backup diário
+## 11. Otimizar vídeos para reprodução
+
+Vídeos novos são otimizados automaticamente no upload: o sistema mantém a
+qualidade original e move os metadados do MP4 para o início do arquivo, o que
+permite começar a carregar antes de baixar o vídeo inteiro. Use MP4 com vídeo
+H.264 e áudio AAC.
+
+Após atualizar o sistema na VPS, otimize uma vez os vídeos que já existiam:
+
+~~~
+cd /opt/aulas-online
+sudo bash ./scripts/backup-full.sh /opt/backups
+sudo bash ./scripts/optimize-existing-videos.sh --dry-run
+sudo bash ./scripts/optimize-existing-videos.sh
+~~~
+
+O script pausa somente o app, exige espaço livre equivalente ao maior vídeo e
+só substitui cada arquivo após validar a cópia otimizada. Para aplicar a nova
+configuração Nginx depois do `git pull`:
+
+~~~
+sudo nginx -t
+sudo systemctl reload nginx
+~~~
+
+Se houver problema, restaure o backup criado antes da otimização com
+`restore-full.sh`. Nunca use `docker compose down -v`.
+
+## 12. Backup diário
 
 ~~~
 sudo mkdir -p /opt/backups
@@ -342,7 +390,7 @@ Adicione:
 
 Copie os backups para outro servidor ou storage e teste periodicamente a restauração com `scripts/restore-full.sh`.
 
-## 12. Diagnóstico
+## 13. Diagnóstico
 
 ~~~
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
@@ -356,7 +404,7 @@ df -h
 - PostgreSQL: confira POSTGRES_PASSWORD e DATABASE_URL; um volume existente mantém a senha inicial.
 - Upload: confirme client_max_body_size 1G e espaço livre.
 
-## 13. Checklist final
+## 14. Checklist final
 
 - [ ] DNS aponta para o VPS e está proxied.
 - [ ] Cloudflare está em Full (strict).

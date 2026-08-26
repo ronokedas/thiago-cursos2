@@ -196,6 +196,7 @@ export const AdminCoursesView: React.FC = () => {
             if (!event.lengthComputable) return;
             setUploadBytes({ loaded: event.loaded, total: event.total });
             setUploadProgress(20 + Math.round((event.loaded / event.total) * 65));
+            if (event.loaded === event.total) setUploadStatus('Otimizando vídeo para reprodução...');
           };
           xhr.onload = () => {
             activeUploadRef.current = null;
@@ -224,7 +225,7 @@ export const AdminCoursesView: React.FC = () => {
         }
       }
 
-      setUploadStatus(materialFile ? 'Enviando material complementar...' : 'Vídeo protegido com sucesso.');
+      setUploadStatus(materialFile ? 'Enviando material complementar...' : 'Vídeo pronto para reprodução.');
       setUploadProgress(100);
       setLessonModalOpen(false);
       setEditingLessonId(null);

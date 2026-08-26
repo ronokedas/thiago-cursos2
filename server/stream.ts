@@ -16,6 +16,7 @@ interface StreamTicket {
 }
 
 const activeTickets = new Map<string, StreamTicket>();
+const STREAM_CHUNK_BYTES = Math.max(1024 * 1024, Number.parseInt(process.env.STREAM_CHUNK_BYTES || String(8 * 1024 * 1024), 10) || 8 * 1024 * 1024);
 
 // Periodic cleanup of expired tickets
 setInterval(() => {
@@ -84,6 +85,7 @@ export function handleStreamRequest(req: Request, res: Response): void {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('X-Accel-Buffering', 'no');
 
   if (videoPath && fs.existsSync(videoPath)) {
     const stat = fs.statSync(videoPath);
@@ -93,14 +95,15 @@ export function handleStreamRequest(req: Request, res: Response): void {
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
-      const requestedEnd = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const end = Math.min(requestedEnd, fileSize - 1);
+      const requestedEnd = parts[1] ? parseInt(parts[1], 10) : start + STREAM_CHUNK_BYTES - 1;
+      const end = Math.min(requestedEnd, start + STREAM_CHUNK_BYTES - 1, fileSize - 1);
       if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= fileSize || end < start) {
         res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
         return;
       }
       const chunkSize = end - start + 1;
       const file = fs.createReadStream(videoPath, { start, end });
+      req.once('close', () => file.destroy());
 
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
@@ -114,7 +117,9 @@ export function handleStreamRequest(req: Request, res: Response): void {
         'Content-Length': fileSize,
         'Content-Type': 'video/mp4',
       });
-      fs.createReadStream(videoPath).pipe(res);
+      const file = fs.createReadStream(videoPath);
+      req.once('close', () => file.destroy());
+      file.pipe(res);
     }
   } else {
     res.status(404).json({ error: 'Vídeo ainda não está disponível para esta aula.' });

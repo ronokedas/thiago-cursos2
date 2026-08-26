@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
 import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, UPLOAD_TMP_DIR } from '../db.js';
 import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
 import { logAudit } from '../audit.js';
@@ -105,6 +106,42 @@ function isMp4File(filePath: string): boolean {
     const bytes = fs.readSync(fd, header, 0, header.length, 0);
     return bytes >= 12 && header.subarray(4, 8).toString('ascii') === 'ftyp';
   } finally { fs.closeSync(fd); }
+}
+
+function runMediaCommand(command: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', error => reject(error));
+    child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `${command} terminou com código ${code}.`)));
+  });
+}
+
+async function inspectMp4(filePath: string): Promise<void> {
+  const output = await runMediaCommand('ffprobe', ['-v', 'error', '-show_entries', 'format=format_name:stream=codec_type,codec_name', '-of', 'json', filePath]);
+  const info = JSON.parse(output) as { format?: { format_name?: string }; streams?: Array<{ codec_type?: string; codec_name?: string }> };
+  const format = info.format?.format_name || '';
+  const videoCodec = info.streams?.find(stream => stream.codec_type === 'video')?.codec_name;
+  const audioCodec = info.streams?.find(stream => stream.codec_type === 'audio')?.codec_name;
+  if (!format.includes('mp4') || videoCodec !== 'h264' || (audioCodec && audioCodec !== 'aac')) {
+    throw new Error('Formato incompatível. Envie MP4 com vídeo H.264 e áudio AAC para reprodução web.');
+  }
+}
+
+async function optimizeMp4(sourcePath: string, finalPath: string): Promise<void> {
+  await inspectMp4(sourcePath);
+  const temporaryPath = `${finalPath}.optimizing-${crypto.randomBytes(6).toString('hex')}.mp4`;
+  try {
+    await runMediaCommand('ffmpeg', ['-y', '-v', 'error', '-i', sourcePath, '-map', '0', '-c', 'copy', '-movflags', '+faststart', temporaryPath]);
+    await inspectMp4(temporaryPath);
+    if (!fs.existsSync(temporaryPath) || fs.statSync(temporaryPath).size === 0) throw new Error('O arquivo otimizado ficou vazio.');
+    fs.renameSync(temporaryPath, finalPath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
 }
 
 // GET /api/admin/metrics
@@ -1103,7 +1140,7 @@ adminRouter.delete('/lessons/:id', (req: Request & { auth?: any }, res: Response
 });
 
 // POST /api/admin/lessons/:id/upload-video
-adminRouter.post('/lessons/:id/upload-video', upload.single('video'), (req: Request & { auth?: any }, res: Response): void => {
+adminRouter.post('/lessons/:id/upload-video', upload.single('video'), async (req: Request & { auth?: any }, res: Response): Promise<void> => {
   const { id } = req.params;
   const file = req.file;
 
@@ -1128,19 +1165,18 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), (req: Requ
   }
 
   const finalPath = path.join(VIDEO_DIR, file.filename);
-  // Docker mounts data and videos as separate volumes; rename can therefore
-  // fail with EXDEV. Copy first, verify size, then remove the temporary file.
-  fs.copyFileSync(file.path, finalPath);
-  if (fs.statSync(finalPath).size !== file.size) {
-    fs.unlinkSync(finalPath);
-    fs.unlinkSync(file.path);
-    res.status(500).json({ error: 'Não foi possível validar o arquivo enviado.' });
+  try {
+    await optimizeMp4(file.path, finalPath);
+  } catch (error) {
+    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Não foi possível otimizar o vídeo enviado.' });
     return;
   }
-  fs.unlinkSync(file.path);
+  if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
   const oldFileName = lesson.videoFileName;
   lesson.videoFileName = file.filename;
-  lesson.videoSizeBytes = file.size;
+  lesson.videoSizeBytes = fs.statSync(finalPath).size;
   lesson.videoUploadedAt = new Date().toISOString();
   lesson.videoProvider = 'LOCAL_SECURE';
   try {
@@ -1162,16 +1198,17 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), (req: Requ
     action: 'UPLOAD_VIDEO',
     entityType: 'LESSON',
     entityId: id,
-    details: { originalName: file.originalname, sizeBytes: file.size, filename: file.filename },
+    details: { originalName: file.originalname, sizeBytes: lesson.videoSizeBytes, filename: file.filename, optimizedForStreaming: true },
   });
 
   res.json({
-    message: 'Vídeo carregado e protegido no servidor com sucesso.',
+    message: 'Vídeo otimizado e protegido no servidor com sucesso.',
     lesson: {
       id: lesson.id,
       title: lesson.title,
       videoFileName: lesson.videoFileName,
-      sizeBytes: file.size,
+      sizeBytes: lesson.videoSizeBytes,
+      optimizedForStreaming: true,
     },
   });
 });

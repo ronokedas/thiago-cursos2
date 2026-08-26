@@ -13,6 +13,9 @@ FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# FFmpeg/FFprobe optimize uploaded MP4 files for progressive playback.
+RUN apk add --no-cache ffmpeg
+
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

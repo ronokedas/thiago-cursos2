@@ -5,7 +5,7 @@ $video = Join-Path $tmp 'qa.mp4'
 
 try {
   Add-Type -AssemblyName System.Net.Http
-  ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=blue:s=320x180:d=1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart $video
+  docker run --rm --entrypoint ffmpeg -v "${tmp}:/output" aulas-online-app -hide_banner -loglevel error -f lavfi -i color=c=blue:s=320x180:d=1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart /output/qa.mp4
   $adminBody = @{ email = 'admin@mecanica.com'; password = 'Admin@Mecanica2026!' } | ConvertTo-Json
   $admin = Invoke-RestMethod http://localhost:3000/api/auth/login -Method Post -ContentType 'application/json' -Body $adminBody
   $headers = @{ Authorization = "Bearer $($admin.token)" }
@@ -33,8 +33,12 @@ try {
   curl.exe -sS -D $streamHeadersFile -o (Join-Path $tmp 'stream.bin') -H "Authorization: Bearer $($student.token)" -H 'Range: bytes=0-15' "http://localhost:3000$($ticket.streamUrl)" | Out-Null
   $streamHeaders = Get-Content $streamHeadersFile -Raw
   if ($streamHeaders -notmatch 'HTTP/\S+ 206') { throw "Streaming não retornou HTTP 206. Cabeçalhos: $streamHeaders" }
+  $streamHeadersFile2 = Join-Path $tmp 'headers-2.txt'
+  curl.exe -sS -D $streamHeadersFile2 -o (Join-Path $tmp 'stream-2.bin') -H "Authorization: Bearer $($student.token)" -H 'Range: bytes=16-31' "http://localhost:3000$($ticket.streamUrl)" | Out-Null
+  $streamHeaders2 = Get-Content $streamHeadersFile2 -Raw
+  if ($streamHeaders2 -notmatch 'Content-Range: bytes 16-31/') { throw "O segundo intervalo não foi atendido corretamente. Cabeçalhos: $streamHeaders2" }
   Write-Host "PASS: upload confirmado ($($upload.lesson.sizeBytes) bytes)"
-  Write-Host 'PASS: streaming HTTP 206 confirmado'
+  Write-Host 'PASS: streaming HTTP 206 em intervalos consecutivos confirmado'
 }
 finally {
   if ($module -and $module.module.id) { Invoke-RestMethod "http://localhost:3000/api/admin/modules/$($module.module.id)" -Method Delete -Headers $headers | Out-Null }
