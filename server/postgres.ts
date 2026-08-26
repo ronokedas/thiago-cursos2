@@ -59,7 +59,7 @@ export async function loadPostgresState(): Promise<DatabaseSchema | null> {
 
 export function persistPostgresState(payload: DatabaseSchema): void {
   if (!ready) return;
-  persistenceQueue = persistenceQueue.then(async () => {
+  persistenceQueue = persistenceQueue.catch(() => undefined).then(async () => {
     const client = await postgresPool.connect();
     try {
       await client.query('BEGIN');
