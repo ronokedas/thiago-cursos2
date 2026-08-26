@@ -50,7 +50,7 @@ export const AdminSettingsView: React.FC = () => {
 
     try {
       const res = await fetch('/api/admin/settings', {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: (() => { const { smtpPassword, ...safeSettings } = settings; return JSON.stringify({ ...safeSettings, smtp: { ...settings.smtp, password: smtpPassword || '' } }); })(),
       });
@@ -333,6 +333,7 @@ export const AdminSettingsView: React.FC = () => {
                 </div>
               ))}
             </div>
+            {adminMessage && <div className={`p-3 rounded-xl text-xs font-semibold ${adminMessage.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}`}>{adminMessage.text}</div>}
             <form onSubmit={handleCreateAdmin} className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs border-t border-neutral-800 pt-5">
               <input required value={adminForm.name} onChange={e => setAdminForm({ ...adminForm, name: e.target.value })} placeholder="Nome do administrador" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
               <input required type="email" value={adminForm.email} onChange={e => setAdminForm({ ...adminForm, email: e.target.value })} placeholder="E-mail" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
