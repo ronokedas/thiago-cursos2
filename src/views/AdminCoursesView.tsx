@@ -5,6 +5,13 @@ import {
 } from 'lucide-react';
 import { CourseSummary, ModuleSummary, LessonSummary } from '../types';
 
+async function readApiPayload(response: Response): Promise<any> {
+  const raw = await response.text();
+  if (!raw) return {};
+  try { return JSON.parse(raw); }
+  catch { return { error: `O servidor respondeu de forma inválida (${response.status}): ${raw.slice(0, 180)}` }; }
+}
+
 export const AdminCoursesView: React.FC = () => {
   const [courseTree, setCourseTree] = useState<{ course: CourseSummary; modules: ModuleSummary[] } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,7 +182,7 @@ export const AdminCoursesView: React.FC = () => {
         }),
       });
 
-      const lessonData = await res.json();
+      const lessonData = await readApiPayload(res);
       if (!res.ok) {
         throw new Error(lessonData.error || 'Não foi possível cadastrar a aula.');
       }
@@ -221,7 +228,7 @@ export const AdminCoursesView: React.FC = () => {
           method: 'POST',
           body: materialFormData,
         });
-        const materialData = await materialRes.json();
+        const materialData = await readApiPayload(materialRes);
         if (!materialRes.ok) {
           throw new Error(materialData.error || 'A aula foi salva, mas o material não pôde ser enviado.');
         }
@@ -233,12 +240,12 @@ export const AdminCoursesView: React.FC = () => {
         for (const draft of practicalDrafts.filter(item => item.file)) {
           const form = new FormData(); form.append('title', draft.title || draft.file!.name); form.append('description', draft.description); form.append('video', draft.file!);
           setUploadStatus(`Enviando vídeo prático: ${draft.title || draft.file!.name}`);
-          const response = await fetch(`/api/admin/lessons/${savedLessonId}/practical-videos`, { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'A aula foi salva, mas um vídeo prático falhou.');
+          const response = await fetch(`/api/admin/lessons/${savedLessonId}/practical-videos`, { method: 'POST', body: form }); const data = await readApiPayload(response); if (!response.ok) throw new Error(data.error || 'A aula foi salva, mas um vídeo prático falhou.');
         }
         for (const draft of imageDrafts.filter(item => item.original)) {
           const form = new FormData(); form.append('title', draft.title || draft.original!.name); form.append('description', draft.description); form.append('original', draft.original!); if (draft.corrected) form.append('corrected', draft.corrected);
           setUploadStatus(`Enviando exercício: ${draft.title || draft.original!.name}`);
-          const response = await fetch(`/api/admin/lessons/${savedLessonId}/image-exercises`, { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'A aula foi salva, mas um exercício de imagens falhou.');
+          const response = await fetch(`/api/admin/lessons/${savedLessonId}/image-exercises`, { method: 'POST', body: form }); const data = await readApiPayload(response); if (!response.ok) throw new Error(data.error || 'A aula foi salva, mas um exercício de imagens falhou.');
         }
       }
 
@@ -450,9 +457,9 @@ export const AdminCoursesView: React.FC = () => {
 
       {/* MODULE CREATE / EDIT MODAL */}
       {topicModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-neutral-800 bg-neutral-900 shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-neutral-800 px-5 py-4 sm:px-7">
               <h2 className="text-base font-bold text-white">{editingTopicId ? 'Editar Tópico' : 'Novo Tópico'}</h2>
               <button type="button" onClick={() => setTopicModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
@@ -567,7 +574,8 @@ export const AdminCoursesView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleCreateLesson} className="space-y-4 text-xs">
+            <form onSubmit={handleCreateLesson} className="flex min-h-0 flex-1 flex-col text-xs">
+              <div className="space-y-4 overflow-y-auto px-5 py-4 sm:px-7">
               <div className="space-y-1">
                 <label className="font-semibold text-neutral-300">Título da Aula *</label>
                 <input
@@ -674,7 +682,8 @@ export const AdminCoursesView: React.FC = () => {
                 </div>
               )}
 
-              <div className="flex gap-2 pt-2">
+              </div>
+              <div className="flex shrink-0 gap-2 border-t border-neutral-800 bg-neutral-900 px-5 py-4 sm:px-7">
                 <button
                   type="button"
                   onClick={() => { if (uploading) activeUploadRef.current?.abort(); else setLessonModalOpen(false); }}
