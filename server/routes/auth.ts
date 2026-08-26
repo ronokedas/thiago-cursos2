@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { readDb, writeDb, User, PasswordResetToken } from '../db.js';
+import { readDb, writeDb, writeDbAndWait, User, PasswordResetToken } from '../db.js';
 import { verifyPassword, hashPassword, createSession, extractAuth, requireAuth, hashToken } from '../auth.js';
 import { logAudit } from '../audit.js';
 import rateLimit from 'express-rate-limit';
@@ -8,6 +8,11 @@ import { sendPasswordResetEmail } from '../email.js';
 
 export const authRouter = Router();
 const credentialLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+
+function publicAuthUser(user: User) {
+  const { passwordHash: _passwordHash, ...safe } = user;
+  return safe;
+}
 
 // POST /api/auth/login
 authRouter.post('/login', credentialLimiter, (req: Request, res: Response): void => {
@@ -134,8 +139,29 @@ authRouter.post('/logout', (req: Request, res: Response): void => {
   res.json({ message: 'Sessão encerrada com sucesso.' });
 });
 
+// PUT /api/auth/profile
+authRouter.put('/profile', requireAuth, async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const db = readDb();
+  const dbUser = db.users.find(u => u.id === req.auth.user.id);
+  if (!dbUser) { res.status(404).json({ error: 'Usuário não encontrado.' }); return; }
+  const name = req.body?.name;
+  const email = req.body?.email;
+  if (name !== undefined && String(name).trim().length < 2) { res.status(400).json({ error: 'Informe um nome válido.' }); return; }
+  if (email !== undefined) {
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) { res.status(400).json({ error: 'Informe um e-mail válido.' }); return; }
+    if (db.users.some(u => u.id !== dbUser.id && u.email.toLowerCase() === normalizedEmail)) { res.status(409).json({ error: 'Já existe um usuário cadastrado com este e-mail.' }); return; }
+    dbUser.email = normalizedEmail;
+  }
+  if (name !== undefined) dbUser.name = String(name).trim();
+  dbUser.updatedAt = new Date().toISOString();
+  await writeDbAndWait(db);
+  logAudit({ actorId: dbUser.id, actorName: dbUser.name, actorRole: dbUser.role, action: 'UPDATE_OWN_PROFILE', entityType: 'USER', entityId: dbUser.id, details: { name: dbUser.name, email: dbUser.email } });
+  res.json({ message: 'Perfil atualizado com sucesso.', user: publicAuthUser(dbUser) });
+});
+
 // POST /api/auth/change-password
-authRouter.post('/change-password', requireAuth, (req: Request & { auth?: any }, res: Response): void => {
+authRouter.post('/change-password', requireAuth, async (req: Request & { auth?: any }, res: Response): Promise<void> => {
   const { newPassword, currentPassword } = req.body;
   if (!newPassword || newPassword.length < 8) {
     res.status(400).json({ error: 'A nova senha deve ter no mínimo 8 caracteres.' });
@@ -151,8 +177,9 @@ authRouter.post('/change-password', requireAuth, (req: Request & { auth?: any },
     return;
   }
 
-  // If not forcing change, require current password
-  if (!dbUser.forcePasswordChange && currentPassword) {
+  // Normal password changes always require the current password. Forced first access does not.
+  if (!dbUser.forcePasswordChange) {
+    if (!currentPassword) { res.status(400).json({ error: 'Informe a senha atual.' }); return; }
     const isCurrentValid = verifyPassword(currentPassword, dbUser.passwordHash);
     if (!isCurrentValid) {
       res.status(400).json({ error: 'A senha atual está incorreta.' });
@@ -163,7 +190,7 @@ authRouter.post('/change-password', requireAuth, (req: Request & { auth?: any },
   dbUser.passwordHash = hashPassword(newPassword);
   dbUser.forcePasswordChange = false;
   dbUser.updatedAt = new Date().toISOString();
-  writeDb(db);
+  await writeDbAndWait(db);
 
   logAudit({
     actorId: dbUser.id,

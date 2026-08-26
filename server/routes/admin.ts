@@ -238,7 +238,10 @@ adminRouter.put('/admins/:id', async (req: Request & { auth?: any }, res: Respon
   const admin = db.users.find(user => user.id === req.params.id && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN'));
   if (!admin) { res.status(404).json({ error: 'Administrador não encontrado.' }); return; }
   const { name, email, phone, status } = req.body;
-  if (admin.role === 'SUPER_ADMIN' && status === 'BLOCKED') { res.status(400).json({ error: 'O último super administrador não pode ser bloqueado.' }); return; }
+  if (admin.role === 'SUPER_ADMIN' && status === 'BLOCKED') {
+    const activeSupers = db.users.filter(user => user.role === 'SUPER_ADMIN' && user.status !== 'BLOCKED').length;
+    if (activeSupers <= 1) { res.status(400).json({ error: 'O último super administrador não pode ser bloqueado.' }); return; }
+  }
   if (email !== undefined) {
     const normalizedEmail = String(email).trim().toLowerCase();
     if (db.users.some(user => user.id !== admin.id && user.email.toLowerCase() === normalizedEmail)) { res.status(409).json({ error: 'Já existe um usuário cadastrado com este e-mail.' }); return; }
@@ -251,6 +254,26 @@ adminRouter.put('/admins/:id', async (req: Request & { auth?: any }, res: Respon
   await writeDbAndWait(db);
   logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'UPDATE_ADMIN', entityType: 'USER', entityId: admin.id, details: { name: admin.name, email: admin.email, status: admin.status } });
   res.json({ message: 'Administrador atualizado com sucesso.', admin: publicUser(admin) });
+});
+
+// DELETE /api/admin/admins/:id
+adminRouter.delete('/admins/:id', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  if (!requireSuperAdmin(req, res)) return;
+  const db = readDb();
+  const index = db.users.findIndex(user => user.id === req.params.id && user.role === 'ADMIN');
+  if (index < 0) {
+    const target = db.users.find(user => user.id === req.params.id);
+    res.status(target?.role === 'SUPER_ADMIN' ? 400 : 404).json({ error: target?.role === 'SUPER_ADMIN' ? 'O super administrador não pode ser excluído.' : 'Administrador não encontrado.' });
+    return;
+  }
+  const [removed] = db.users.splice(index, 1);
+  db.sessions = db.sessions.filter(session => session.userId !== removed.id);
+  db.passwordResetTokens = db.passwordResetTokens.filter(token => token.userId !== removed.id);
+  db.lessonProgress = db.lessonProgress.filter(progress => progress.userId !== removed.id);
+  db.userContentOverrides = db.userContentOverrides.filter(override => override.userId !== removed.id);
+  await writeDbAndWait(db);
+  logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'DELETE_ADMIN', entityType: 'USER', entityId: removed.id, details: { email: removed.email } });
+  res.json({ message: 'Administrador excluído com sucesso.' });
 });
 
 // POST /api/admin/admins/:id/reset-password
