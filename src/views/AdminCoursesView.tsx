@@ -458,7 +458,7 @@ export const AdminCoursesView: React.FC = () => {
       {/* MODULE CREATE / EDIT MODAL */}
       {topicModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
-          <div className="flex h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-neutral-800 bg-neutral-900 shadow-2xl sm:h-auto sm:max-h-[calc(100dvh-2rem)]">
+          <div className="flex h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-neutral-800 bg-neutral-900 shadow-2xl">
             <div className="flex shrink-0 items-center justify-between border-b border-neutral-800 px-5 py-4 sm:px-7">
               <h2 className="text-base font-bold text-white">{editingTopicId ? 'Editar Tópico' : 'Novo Tópico'}</h2>
               <button type="button" onClick={() => setTopicModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
@@ -575,7 +575,7 @@ export const AdminCoursesView: React.FC = () => {
             </div>
 
             <form onSubmit={handleCreateLesson} className="flex min-h-0 flex-1 flex-col text-xs">
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4 sm:px-7">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-scroll overscroll-contain px-5 py-4 sm:px-7">
               <div className="space-y-1">
                 <label className="font-semibold text-neutral-300">Título da Aula *</label>
                 <input
