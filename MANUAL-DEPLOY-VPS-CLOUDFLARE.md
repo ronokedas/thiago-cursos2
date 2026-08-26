@@ -262,8 +262,16 @@ ls -lh /opt/backups/mentoria-backup-*
 ~~~
 
 Baixe para um local seguro o arquivo `.tar.gz` e o arquivo correspondente
-`.tar.gz.sha256`. No SSH do Google Cloud, use o botão de download de arquivo;
-por `scp`, use:
+`.tar.gz.sha256`.
+
+Se estiver usando o SSH do Google Cloud pelo navegador:
+
+1. Clique em **Fazer download do arquivo**.
+2. Informe `/opt/backups/mentoria-backup-DATA.tar.gz` e salve no computador.
+3. Repita o processo para `/opt/backups/mentoria-backup-DATA.tar.gz.sha256`.
+
+Também é possível baixar os arquivos pelo terminal do seu computador usando
+`scp`:
 
 ~~~
 scp usuario@IP_DA_VPS:/opt/backups/mentoria-backup-DATA.tar.gz .
@@ -271,14 +279,35 @@ scp usuario@IP_DA_VPS:/opt/backups/mentoria-backup-DATA.tar.gz.sha256 .
 ~~~
 
 Na VPS nova, instale o sistema normalmente, clone a branch `main` e crie o
-`.env` inicial para que o Docker consiga subir. Depois envie o pacote para a
-VPS nova:
+`.env` inicial para que o Docker consiga subir. Depois envie os dois arquivos
+para a VPS nova. Pelo terminal do seu computador:
 
 ~~~
 sudo mkdir -p /opt/backups
 sudo chown -R "$USER":"$USER" /opt/backups
 scp mentoria-backup-DATA.tar.gz usuario@IP_NOVA_VPS:/opt/backups/
 scp mentoria-backup-DATA.tar.gz.sha256 usuario@IP_NOVA_VPS:/opt/backups/
+~~~
+
+Se estiver usando o SSH do Google Cloud na nova VPS:
+
+1. Clique em **Fazer upload do arquivo**.
+2. Selecione `mentoria-backup-DATA.tar.gz` no computador.
+3. Repita para `mentoria-backup-DATA.tar.gz.sha256`.
+4. Mova os arquivos enviados para `/opt/backups`:
+
+~~~
+sudo mkdir -p /opt/backups
+sudo mv ~/mentoria-backup-DATA.tar.gz /opt/backups/
+sudo mv ~/mentoria-backup-DATA.tar.gz.sha256 /opt/backups/
+sudo chmod 600 /opt/backups/mentoria-backup-DATA.tar.gz*
+~~~
+
+O local inicial do upload pode variar conforme o usuário do SSH. Se os
+arquivos não estiverem em `~`, localize-os antes de mover:
+
+~~~
+find /home -maxdepth 3 -type f -name 'mentoria-backup-DATA*' 2>/dev/null
 ~~~
 
 Na nova VPS, restaure com:
@@ -311,7 +340,7 @@ Adicione:
 0 3 * * * cd /opt/aulas-online && sudo bash ./scripts/backup-full.sh /opt/backups >> /var/log/aulas-online-backup.log 2>&1
 ~~~
 
-Copie os backups para outro servidor ou storage e teste periodicamente a restauração com scripts/restore.sh.
+Copie os backups para outro servidor ou storage e teste periodicamente a restauração com `scripts/restore-full.sh`.
 
 ## 12. Diagnóstico
 
