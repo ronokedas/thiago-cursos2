@@ -128,6 +128,27 @@ export interface ImageExercise {
   corrected?: ImageAsset;
 }
 
+export interface StudentLessonNoteImage extends ImageAsset {
+  id: string;
+}
+
+export interface StudentLessonNoteEntry {
+  id: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StudentLessonNote {
+  id: string;
+  userId: string;
+  lessonId: string;
+  createdAt: string;
+  updatedAt: string;
+  notes: StudentLessonNoteEntry[];
+  images: StudentLessonNoteImage[];
+}
+
 export interface UserContentOverride {
   id: string;
   userId: string;
@@ -212,6 +233,7 @@ export interface DatabaseSchema {
   lessons: Lesson[];
   userContentOverrides: UserContentOverride[];
   lessonProgress: LessonProgress[];
+  studentLessonNotes: StudentLessonNote[];
   auditLogs: AuditLog[];
   passwordResetTokens: PasswordResetToken[];
   systemSettings: SystemSettings;
@@ -222,6 +244,7 @@ const DB_FILE = path.join(DATA_DIR, 'database.json');
 const VIDEO_DIR = path.join(DATA_DIR, 'videos');
 const MATERIAL_DIR = path.join(DATA_DIR, 'materials');
 const LESSON_MEDIA_DIR = path.join(DATA_DIR, 'lesson-media');
+const STUDENT_NOTES_DIR = path.join(DATA_DIR, 'student-notes');
 const UPLOAD_TMP_DIR = path.join(DATA_DIR, 'uploads');
 let databaseCache: DatabaseSchema | null = null;
 
@@ -234,6 +257,7 @@ export function initDatabase(): void {
   }
   if (!fs.existsSync(MATERIAL_DIR)) fs.mkdirSync(MATERIAL_DIR, { recursive: true });
   if (!fs.existsSync(LESSON_MEDIA_DIR)) fs.mkdirSync(LESSON_MEDIA_DIR, { recursive: true });
+  if (!fs.existsSync(STUDENT_NOTES_DIR)) fs.mkdirSync(STUDENT_NOTES_DIR, { recursive: true });
   if (!fs.existsSync(UPLOAD_TMP_DIR)) fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
   for (const entry of fs.readdirSync(UPLOAD_TMP_DIR)) {
     const filePath = path.join(UPLOAD_TMP_DIR, entry);
@@ -252,6 +276,7 @@ export function initDatabase(): void {
       lessons: [],
       userContentOverrides: [],
       lessonProgress: [],
+      studentLessonNotes: [],
       auditLogs: [],
       passwordResetTokens: [],
       systemSettings: {
@@ -301,6 +326,7 @@ export function readDb(): DatabaseSchema {
       lessons: [],
       userContentOverrides: [],
       lessonProgress: [],
+      studentLessonNotes: [],
       auditLogs: [],
       passwordResetTokens: [],
       systemSettings: {
@@ -333,6 +359,26 @@ export async function hydrateDatabaseFromPostgres(): Promise<void> {
 }
 
 function normalizeDatabase(data: DatabaseSchema): DatabaseSchema {
+  data.studentLessonNotes = Array.isArray(data.studentLessonNotes) ? data.studentLessonNotes : [];
+  for (const note of data.studentLessonNotes) {
+    const legacyText = typeof (note as StudentLessonNote & { text?: unknown }).text === 'string'
+      ? (note as StudentLessonNote & { text: string }).text.trim()
+      : '';
+    note.notes = Array.isArray(note.notes) ? note.notes.filter(entry => entry && typeof entry.text === 'string') : [];
+    note.images = Array.isArray(note.images) ? note.images : [];
+    note.createdAt = note.createdAt || note.updatedAt || new Date().toISOString();
+    note.updatedAt = note.updatedAt || note.createdAt;
+    if (legacyText && note.notes.length === 0) {
+      note.notes.push({ id: `noteentry_${crypto.randomUUID()}`, text: legacyText, createdAt: note.createdAt, updatedAt: note.updatedAt });
+    }
+    for (const entry of note.notes) {
+      entry.id = entry.id || `noteentry_${crypto.randomUUID()}`;
+      entry.text = entry.text.slice(0, 10_000);
+      entry.createdAt = entry.createdAt || note.createdAt;
+      entry.updatedAt = entry.updatedAt || entry.createdAt;
+    }
+    delete (note as StudentLessonNote & { text?: string }).text;
+  }
   const settings = data.systemSettings || ({} as SystemSettings);
   data.systemSettings = {
     ...settings,
@@ -369,4 +415,4 @@ export async function writeDbAndWait(data: DatabaseSchema): Promise<void> {
   await waitForPostgresPersistence();
 }
 
-export { DATA_DIR, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, UPLOAD_TMP_DIR, DB_FILE };
+export { DATA_DIR, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, STUDENT_NOTES_DIR, UPLOAD_TMP_DIR, DB_FILE };

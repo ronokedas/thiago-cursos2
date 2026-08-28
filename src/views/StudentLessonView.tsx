@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Play, CheckCircle2, Lock, ChevronLeft, ChevronRight, 
-  FileText, Download, ShieldCheck, Clock, BookOpen, AlertCircle, ArrowLeft, Image as ImageIcon, Video, Maximize, X
+  FileText, Download, ShieldCheck, Clock, BookOpen, AlertCircle, ArrowLeft, Image as ImageIcon, Video, Maximize, X, Upload, Trash2, Save, NotebookPen, Pencil
 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
-import { LessonDetail, CourseSummary, ModuleSummary, WatermarkData } from '../types';
+import { LessonDetail, CourseSummary, ModuleSummary, WatermarkData, PersonalNotebook } from '../types';
 
 interface StudentLessonViewProps {
   lessonId: string;
@@ -35,6 +35,7 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     watermark: WatermarkData;
     progress: { isCompleted: boolean; progressPercent: number; lastPositionSeconds: number; mainVideoEndedAt?: string | null };
     telegram?: { url: string; message: string; buttonLabel: string };
+    personalNotebook: PersonalNotebook;
   } | null>(null);
 
   const [courseTree, setCourseTree] = useState<{ course: CourseSummary; modules: ModuleSummary[] } | null>(null);
@@ -44,10 +45,17 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
     availableAt?: string;
     reason?: string;
   } | null>(null);
-  const [mediaTab, setMediaTab] = useState<'MAIN' | 'PRACTICAL' | 'IMAGES'>('MAIN');
+  const [mediaTab, setMediaTab] = useState<'MAIN' | 'PRACTICAL' | 'IMAGES' | 'NOTEBOOK'>('MAIN');
   const [practicalStream, setPracticalStream] = useState<{ id: string; title: string; streamUrl: string; durationSeconds: number } | null>(null);
   const [correctedImage, setCorrectedImage] = useState<{ title: string; url: string } | null>(null);
   const [mediaMessage, setMediaMessage] = useState<string | null>(null);
+  const [notebookText, setNotebookText] = useState('');
+  const [notebookSaving, setNotebookSaving] = useState(false);
+  const [notebookUploading, setNotebookUploading] = useState(false);
+  const [notebookError, setNotebookError] = useState<string | null>(null);
+  const [notebookNotice, setNotebookNotice] = useState<string | null>(null);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState('');
 
   const fetchLesson = async (id: string) => {
     setLoading(true);
@@ -61,6 +69,8 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
       if (res.ok) {
         const d = await res.json();
         setLessonData(d);
+        setNotebookText('');
+        setNotebookError(null); setNotebookNotice(null);
       } else if (res.status === 403) {
         const err = await res.json();
         setAccessRestricted(err.access || { reason: 'Bloqueado temporariamente.' });
@@ -79,8 +89,81 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
 
   useEffect(() => {
     fetchLesson(lessonId);
-    setMediaTab('MAIN'); setPracticalStream(null); setCorrectedImage(null); setMediaMessage(null);
+    setMediaTab('MAIN'); setPracticalStream(null); setCorrectedImage(null); setMediaMessage(null); setNotebookText(''); setNotebookError(null); setNotebookNotice(null); setEditingNoteId(null);
   }, [lessonId]);
+
+  const setPersonalNotebook = (personalNotebook: PersonalNotebook) => {
+    setLessonData(prev => prev ? { ...prev, personalNotebook } : prev);
+  };
+
+  const saveNotebook = async () => {
+    if (!lessonData || notebookText.length > 10_000) return;
+    setNotebookSaving(true); setNotebookError(null);
+    try {
+      const response = await fetch(`/api/student/lesson/${lessonId}/notebook/notes`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: notebookText }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível salvar a anotação.');
+      setPersonalNotebook(data.personalNotebook);
+      setNotebookText(''); setNotebookNotice('Anotação salva com sucesso.');
+    } catch (error) { setNotebookError(error instanceof Error ? error.message : 'Não foi possível salvar a anotação.'); }
+    finally { setNotebookSaving(false); }
+  };
+
+  const saveEditedNote = async () => {
+    if (!editingNoteId || !editingNoteText.trim() || editingNoteText.length > 10_000) return;
+    setNotebookSaving(true); setNotebookError(null); setNotebookNotice(null);
+    try {
+      const response = await fetch(`/api/student/lesson/${lessonId}/notebook/notes/${editingNoteId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: editingNoteText }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível atualizar a anotação.');
+      setPersonalNotebook(data.personalNotebook); setEditingNoteId(null); setEditingNoteText(''); setNotebookNotice('Anotação atualizada.');
+    } catch (error) { setNotebookError(error instanceof Error ? error.message : 'Não foi possível atualizar a anotação.'); }
+    finally { setNotebookSaving(false); }
+  };
+
+  const deleteNotebookNote = async (noteId: string) => {
+    setNotebookError(null); setNotebookNotice(null);
+    try {
+      const response = await fetch(`/api/student/lesson/${lessonId}/notebook/notes/${noteId}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível excluir a anotação.');
+      setPersonalNotebook(data.personalNotebook); if (editingNoteId === noteId) setEditingNoteId(null); setNotebookNotice('Anotação removida.');
+    } catch (error) { setNotebookError(error instanceof Error ? error.message : 'Não foi possível excluir a anotação.'); }
+  };
+
+  const uploadNotebookImages = async (files: FileList | null) => {
+    if (!files?.length || !lessonData) return;
+    const selected = Array.from(files);
+    const available = 10 - lessonData.personalNotebook.images.length;
+    if (selected.length > available) { setNotebookError(`Você pode enviar somente mais ${available} imagem(ns) nesta aula.`); return; }
+    setNotebookUploading(true); setNotebookError(null); setNotebookNotice(null);
+    try {
+      for (const file of selected) {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('Envie somente imagens JPEG, PNG ou WebP. PDFs não são aceitos.');
+        if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} excede o limite de 10 MB.`);
+        const form = new FormData(); form.append('image', file);
+        const response = await fetch(`/api/student/lesson/${lessonId}/notebook/images`, { method: 'POST', body: form });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Não foi possível enviar ${file.name}.`);
+        setPersonalNotebook(data.personalNotebook); setNotebookNotice('Imagem enviada com sucesso.');
+      }
+    } catch (error) { setNotebookError(error instanceof Error ? error.message : 'Não foi possível enviar a imagem.'); }
+    finally { setNotebookUploading(false); }
+  };
+
+  const deleteNotebookImage = async (imageId: string) => {
+    setNotebookError(null); setNotebookNotice(null);
+    try {
+      const response = await fetch(`/api/student/lesson/${lessonId}/notebook/images/${imageId}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível excluir a imagem.');
+      setPersonalNotebook(data.personalNotebook); setNotebookNotice('Imagem removida.');
+    } catch (error) { setNotebookError(error instanceof Error ? error.message : 'Não foi possível excluir a imagem.'); }
+  };
 
   const handleMainVideoEnded = async (positionSeconds: number, durationSeconds: number) => {
     try {
@@ -224,9 +307,9 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
           <section className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-3">
             <div className="flex gap-2 overflow-x-auto pb-1">
               {([
-                ['MAIN', 'Vídeo principal', Play], ['PRACTICAL', 'Operando na prática', Video], ['IMAGES', 'Imagens e correções', ImageIcon],
+                ['MAIN', 'Vídeo principal', Play], ['PRACTICAL', 'Operando na prática', Video], ['IMAGES', 'Imagens e correções', ImageIcon], ['NOTEBOOK', 'Minhas anotações', NotebookPen],
               ] as const).map(([tab, label, Icon]) => {
-                const locked = tab !== 'MAIN' && !lessonData.progress.mainVideoEndedAt;
+                const locked = (tab === 'PRACTICAL' || tab === 'IMAGES') && !lessonData.progress.mainVideoEndedAt;
                 return <button key={tab} type="button" onClick={() => { setMediaTab(tab); setMediaMessage(locked ? 'Finalize o vídeo principal para liberar este conteúdo.' : null); }} className={`shrink-0 inline-flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold ${mediaTab === tab ? 'bg-amber-500 text-neutral-950' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'} ${locked ? 'opacity-70' : ''}`}><Icon className="h-4 w-4" />{locked && <Lock className="h-3.5 w-3.5" />}{label}</button>;
               })}
             </div>
@@ -241,6 +324,24 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
           {mediaTab === 'IMAGES' && <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4 space-y-3">
             <h2 className="text-sm font-bold text-white">Imagens e correções</h2>
             {lessonData.lesson.imageExercises?.length ? <div className="space-y-2">{lessonData.lesson.imageExercises.map(exercise => <div key={exercise.id} className="flex flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-bold text-neutral-100">{exercise.title}</p><p className="text-[11px] text-neutral-500">{exercise.description}</p></div><div className="flex gap-2"><a href={exercise.originalDownloadUrl} className="inline-flex items-center gap-1 rounded-lg bg-neutral-800 px-3 py-2 text-xs font-semibold text-white"><Download className="h-3.5 w-3.5" />Sem correção</a>{exercise.hasCorrected && (lessonData.progress.mainVideoEndedAt && exercise.correctedViewUrl ? <button type="button" onClick={() => { setPracticalStream(null); setCorrectedImage({ title: exercise.title, url: exercise.correctedViewUrl! }); }} className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-neutral-950"><ImageIcon className="h-3.5 w-3.5" />Ver correção</button> : <span className="inline-flex items-center gap-1 rounded-lg border border-neutral-700 px-3 py-2 text-xs text-neutral-500"><Lock className="h-3.5 w-3.5" />Correção bloqueada</span>)}</div></div>)}</div> : <p className="text-xs text-neutral-500">Ainda não há exercícios de imagem nesta aula.</p>}
+          </section>}
+
+          {mediaTab === 'NOTEBOOK' && <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4 space-y-5">
+            <div>
+              <h2 className="text-sm font-bold text-white">Minhas anotações</h2>
+              <p className="mt-1 text-xs leading-relaxed text-neutral-400">Este espaço é privado e fica vinculado somente a esta aula. Você pode salvar quantas anotações quiser.</p>
+            </div>
+            <div className="space-y-2">
+              <textarea value={notebookText} onChange={event => setNotebookText(event.target.value)} maxLength={10_000} rows={5} placeholder="Escreva uma nova anotação, dúvida ou ponto importante da aula..." className="w-full resize-y rounded-xl border border-neutral-700 bg-neutral-950 p-3 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-amber-500" />
+              <div className="flex items-center justify-between gap-3"><span className="text-[11px] text-neutral-500">{notebookText.length.toLocaleString('pt-BR')}/10.000 caracteres</span><button type="button" disabled={notebookSaving || !notebookText.trim() || notebookText.length > 10_000} onClick={saveNotebook} className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-60"><Save className="h-3.5 w-3.5" />{notebookSaving ? 'Salvando...' : 'Salvar anotação'}</button></div>
+            </div>
+            {notebookNotice && <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">{notebookNotice}</p>}
+            {notebookError && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">{notebookError}</p>}
+            {lessonData.personalNotebook.notes.length ? <div className="space-y-3">{lessonData.personalNotebook.notes.map(note => <article key={note.id} className="rounded-xl border border-neutral-800 bg-neutral-950 p-3"><div className="mb-2 flex items-center justify-between gap-3"><span className="text-[10px] text-neutral-500">Salva em {new Date(note.createdAt).toLocaleString('pt-BR')}</span><div className="flex items-center gap-1"><button type="button" onClick={() => { setEditingNoteId(note.id); setEditingNoteText(note.text); }} className="rounded-md p-1.5 text-amber-300 hover:bg-amber-500/15" aria-label="Editar anotação"><Pencil className="h-3.5 w-3.5" /></button><button type="button" onClick={() => deleteNotebookNote(note.id)} className="rounded-md p-1.5 text-red-300 hover:bg-red-500/15" aria-label="Excluir anotação"><Trash2 className="h-3.5 w-3.5" /></button></div></div>{editingNoteId === note.id ? <div className="space-y-2"><textarea value={editingNoteText} onChange={event => setEditingNoteText(event.target.value)} maxLength={10_000} rows={4} className="w-full resize-y rounded-lg border border-neutral-700 bg-neutral-900 p-2.5 text-sm text-neutral-100 outline-none focus:border-amber-500" /><div className="flex justify-end gap-2"><button type="button" onClick={() => setEditingNoteId(null)} className="rounded-lg px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800">Cancelar</button><button type="button" disabled={notebookSaving || !editingNoteText.trim()} onClick={saveEditedNote} className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-bold text-neutral-950 disabled:opacity-60">Salvar alterações</button></div></div> : <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">{note.text}</p>}</article>)}</div> : <div className="rounded-xl border border-dashed border-neutral-700 bg-neutral-950/50 px-4 py-5 text-center text-xs text-neutral-500">Suas anotações salvas aparecerão aqui.</div>}
+            <div className="border-t border-neutral-800 pt-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xs font-bold text-neutral-200">Imagens da sua anotação</h3><p className="mt-1 text-[11px] text-neutral-500">JPEG, PNG ou WebP · até 10 MB por imagem · máximo de 10 imagens.</p></div><label className={`inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-neutral-700 bg-neutral-800 px-3.5 py-2 text-xs font-semibold text-white hover:bg-neutral-700 ${notebookUploading || lessonData.personalNotebook.images.length >= 10 ? 'pointer-events-none opacity-50' : ''}`}><Upload className="h-3.5 w-3.5 text-amber-400" />{notebookUploading ? 'Enviando...' : 'Enviar imagens'}<input type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" disabled={notebookUploading || lessonData.personalNotebook.images.length >= 10} onChange={event => { uploadNotebookImages(event.target.files); event.currentTarget.value = ''; }} /></label></div>
+              {lessonData.personalNotebook.images.length ? <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{lessonData.personalNotebook.images.map(image => <article key={image.id} className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950"><a href={image.viewUrl} target="_blank" rel="noopener noreferrer"><img src={image.viewUrl} alt={image.originalName} className="h-28 w-full object-cover" /></a><div className="flex items-center justify-between gap-2 p-2"><p className="truncate text-[10px] text-neutral-400" title={image.originalName}>{image.originalName}</p><button type="button" onClick={() => deleteNotebookImage(image.id)} aria-label={`Excluir ${image.originalName}`} className="rounded-md p-1.5 text-red-300 hover:bg-red-500/15 hover:text-red-200"><Trash2 className="h-3.5 w-3.5" /></button></div></article>)}</div> : <div className="mt-4 rounded-xl border border-dashed border-neutral-700 bg-neutral-950/50 px-4 py-6 text-center text-xs text-neutral-500">Nenhuma imagem enviada nesta aula.</div>}
+            </div>
           </section>}
 
           {/* Custom Video Player with Floating Watermark */}

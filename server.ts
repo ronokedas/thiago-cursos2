@@ -93,9 +93,11 @@ async function startServer() {
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled request error:', err?.message || err);
     if (res.headersSent) return;
-    const isUploadError = err?.name === 'MulterError' || String(err?.message || '').includes('arquivo MP4');
+    const isUploadError = err?.name === 'MulterError' || String(err?.message || '').includes('arquivo MP4') || String(err?.message || '').includes('somente imagens JPEG');
     const status = isUploadError ? (err.code === 'LIMIT_FILE_SIZE' ? 413 : 400) : Number(err?.statusCode || err?.status) || 500;
-    const message = err?.code === 'LIMIT_FILE_SIZE' ? 'O arquivo excede o limite de 1 GB.' : (status === 500 ? 'Erro interno do servidor.' : String(err.message || 'Requisição inválida.'));
+    const message = err?.code === 'LIMIT_FILE_SIZE'
+      ? (err?.field === 'image' ? 'A imagem excede o limite de 10 MB.' : 'O arquivo excede o limite de 1 GB.')
+      : (status === 500 ? 'Erro interno do servidor.' : String(err.message || 'Requisição inválida.'));
     res.status(status).json({ error: message });
   });
 

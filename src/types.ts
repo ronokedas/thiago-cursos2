@@ -235,3 +235,24 @@ export interface LessonDetail {
   practicalVideos?: Array<{ id: string; title: string; description: string; position: number; sizeBytes: number; durationSeconds: number; uploadedAt: string }>;
   imageExercises?: Array<{ id: string; title: string; description: string; position: number; originalDownloadUrl: string; hasCorrected: boolean; correctedViewUrl: string | null }>;
 }
+
+export interface PersonalNotebookImage {
+  id: string;
+  originalName: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  sizeBytes: number;
+  uploadedAt: string;
+  viewUrl: string;
+}
+
+export interface PersonalNotebook {
+  createdAt: string | null;
+  updatedAt: string | null;
+  notes: Array<{
+    id: string;
+    text: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  images: PersonalNotebookImage[];
+}

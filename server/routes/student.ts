@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { readDb, writeDbAndWait, LessonProgress, User, MATERIAL_DIR, LESSON_MEDIA_DIR, ImageAsset } from '../db.js';
+import multer from 'multer';
+import { readDb, writeDbAndWait, LessonProgress, User, MATERIAL_DIR, LESSON_MEDIA_DIR, STUDENT_NOTES_DIR, UPLOAD_TMP_DIR, ImageAsset, StudentLessonNote, StudentLessonNoteImage, StudentLessonNoteEntry } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { canUserAccessLesson, canUserAccessModule, calculateDiffDays } from '../accessControl.js';
 import { generateStreamTicket } from '../stream.js';
@@ -11,6 +12,22 @@ export const studentRouter = Router();
 
 // Apply auth middleware to all student routes
 studentRouter.use(requireAuth);
+
+const NOTE_IMAGE_TYPES: ImageAsset['mimeType'][] = ['image/jpeg', 'image/png', 'image/webp'];
+const noteImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, UPLOAD_TMP_DIR),
+    filename: (_req, _file, cb) => cb(null, `note_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`),
+  }),
+  fileFilter: (_req, file, cb) => {
+    if (!NOTE_IMAGE_TYPES.includes(file.mimetype as ImageAsset['mimeType'])) {
+      cb(new Error('Envie somente imagens JPEG, PNG ou WebP. PDFs não são aceitos.'));
+      return;
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 studentRouter.get('/material/:lessonId/:materialId', (req: Request & { auth?: any }, res: Response): void => {
   const db = readDb();
@@ -39,6 +56,151 @@ function sendPrivateImage(res: Response, asset: ImageAsset, inline: boolean): vo
   res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(asset.originalName)}`);
   fs.createReadStream(filePath).pipe(res);
 }
+
+function noteImageMimeFromSignature(filePath: string): ImageAsset['mimeType'] | null {
+  const buffer = fs.readFileSync(filePath).subarray(0, 16);
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function notebookFor(db: ReturnType<typeof readDb>, userId: string, lessonId: string): StudentLessonNote | undefined {
+  return db.studentLessonNotes.find(note => note.userId === userId && note.lessonId === lessonId);
+}
+
+function notebookPayload(note: StudentLessonNote | undefined, lessonId: string) {
+  return {
+    createdAt: note?.createdAt || null,
+    updatedAt: note?.updatedAt || null,
+    notes: (note?.notes || []).map(entry => ({ id: entry.id, text: entry.text, createdAt: entry.createdAt, updatedAt: entry.updatedAt })),
+    images: (note?.images || []).map(image => ({
+      id: image.id,
+      originalName: image.originalName,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      uploadedAt: image.uploadedAt,
+      viewUrl: `/api/student/lesson/${lessonId}/notebook/images/${image.id}`,
+    })),
+  };
+}
+
+function authorizedLesson(req: Request & { auth?: any }, res: Response) {
+  const db = readDb();
+  const lesson = db.lessons.find(item => item.id === req.params.lessonId || item.id === req.params.id);
+  if (!lesson) { res.status(404).json({ error: 'Aula não encontrada.' }); return null; }
+  if (!canUserAccessLesson(req.auth!.user.id, lesson.id).allowed) { res.status(403).json({ error: 'Você não possui acesso a esta aula.' }); return null; }
+  return { db, lesson };
+}
+
+function validNoteText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 && text.length <= 10_000 ? text : null;
+}
+
+function createNotebook(userId: string, lessonId: string, now: string): StudentLessonNote {
+  return { id: `notebook_${crypto.randomUUID()}`, userId, lessonId, createdAt: now, updatedAt: now, notes: [], images: [] };
+}
+
+studentRouter.post('/lesson/:lessonId/notebook/notes', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const found = authorizedLesson(req, res); if (!found) return;
+  const text = validNoteText(req.body?.text);
+  if (!text) { res.status(400).json({ error: 'Digite uma anotação de até 10.000 caracteres.' }); return; }
+  const now = new Date().toISOString();
+  let note = notebookFor(found.db, req.auth!.user.id, found.lesson.id);
+  if (!note) {
+    note = createNotebook(req.auth!.user.id, found.lesson.id, now);
+    found.db.studentLessonNotes.push(note);
+  }
+  const entry: StudentLessonNoteEntry = { id: `noteentry_${crypto.randomUUID()}`, text, createdAt: now, updatedAt: now };
+  note.notes.push(entry);
+  note.updatedAt = now;
+  await writeDbAndWait(found.db);
+  res.status(201).json({ message: 'Anotação salva.', personalNotebook: notebookPayload(note, found.lesson.id) });
+});
+
+studentRouter.put('/lesson/:lessonId/notebook/notes/:noteId', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const found = authorizedLesson(req, res); if (!found) return;
+  const text = validNoteText(req.body?.text);
+  if (!text) { res.status(400).json({ error: 'Digite uma anotação de até 10.000 caracteres.' }); return; }
+  const note = notebookFor(found.db, req.auth!.user.id, found.lesson.id);
+  const entry = note?.notes.find(item => item.id === req.params.noteId);
+  if (!note || !entry) { res.status(404).json({ error: 'Anotação não encontrada.' }); return; }
+  entry.text = text;
+  entry.updatedAt = new Date().toISOString();
+  note.updatedAt = entry.updatedAt;
+  await writeDbAndWait(found.db);
+  res.json({ message: 'Anotação atualizada.', personalNotebook: notebookPayload(note, found.lesson.id) });
+});
+
+studentRouter.delete('/lesson/:lessonId/notebook/notes/:noteId', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const found = authorizedLesson(req, res); if (!found) return;
+  const note = notebookFor(found.db, req.auth!.user.id, found.lesson.id);
+  if (!note || !note.notes.some(item => item.id === req.params.noteId)) { res.status(404).json({ error: 'Anotação não encontrada.' }); return; }
+  note.notes = note.notes.filter(item => item.id !== req.params.noteId);
+  note.updatedAt = new Date().toISOString();
+  await writeDbAndWait(found.db);
+  res.json({ message: 'Anotação removida.', personalNotebook: notebookPayload(note, found.lesson.id) });
+});
+
+studentRouter.post('/lesson/:lessonId/notebook/images', noteImageUpload.single('image'), async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const file = req.file;
+  const cleanupTemp = () => { if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path); };
+  const found = authorizedLesson(req, res); if (!found) { cleanupTemp(); return; }
+  if (!file) { res.status(400).json({ error: 'Selecione uma imagem JPEG, PNG ou WebP.' }); return; }
+  let note = notebookFor(found.db, req.auth!.user.id, found.lesson.id);
+  if ((note?.images.length || 0) >= 10) { cleanupTemp(); res.status(400).json({ error: 'O limite é de 10 imagens por aula.' }); return; }
+  const mimeType = noteImageMimeFromSignature(file.path);
+  if (!mimeType) { cleanupTemp(); res.status(400).json({ error: 'Arquivo inválido. Envie uma imagem JPEG, PNG ou WebP verdadeira.' }); return; }
+  const extension = mimeType === 'image/jpeg' ? '.jpg' : mimeType === 'image/png' ? '.png' : '.webp';
+  const storageFileName = `note_${crypto.randomUUID()}${extension}`;
+  const finalPath = path.join(STUDENT_NOTES_DIR, storageFileName);
+  const now = new Date().toISOString();
+  const image: StudentLessonNoteImage = { id: `noteimg_${crypto.randomUUID()}`, storageFileName, originalName: path.basename(file.originalname), mimeType, sizeBytes: file.size, uploadedAt: now };
+  try {
+    fs.renameSync(file.path, finalPath);
+    if (!note) {
+      note = createNotebook(req.auth!.user.id, found.lesson.id, now);
+      found.db.studentLessonNotes.push(note);
+    }
+    note.images.push(image);
+    note.updatedAt = now;
+    await writeDbAndWait(found.db);
+    res.status(201).json({ message: 'Imagem enviada.', personalNotebook: notebookPayload(note, found.lesson.id) });
+  } catch (error) {
+    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+    if (note) note.images = note.images.filter(item => item.id !== image.id);
+    res.status(500).json({ error: 'Não foi possível salvar a imagem. Tente novamente.' });
+  }
+});
+
+studentRouter.get('/lesson/:lessonId/notebook/images/:imageId', (req: Request & { auth?: any }, res: Response): void => {
+  const found = authorizedLesson(req, res); if (!found) return;
+  const note = notebookFor(found.db, req.auth!.user.id, found.lesson.id);
+  const image = note?.images.find(item => item.id === req.params.imageId);
+  if (!image) { res.status(404).json({ error: 'Imagem não encontrada.' }); return; }
+  const filePath = path.join(STUDENT_NOTES_DIR, path.basename(image.storageFileName));
+  if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'Arquivo da imagem não encontrado.' }); return; }
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Type', image.mimeType);
+  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(image.originalName)}`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+studentRouter.delete('/lesson/:lessonId/notebook/images/:imageId', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const found = authorizedLesson(req, res); if (!found) return;
+  const note = notebookFor(found.db, req.auth!.user.id, found.lesson.id);
+  const image = note?.images.find(item => item.id === req.params.imageId);
+  if (!note || !image) { res.status(404).json({ error: 'Imagem não encontrada.' }); return; }
+  note.images = note.images.filter(item => item.id !== image.id);
+  note.updatedAt = new Date().toISOString();
+  await writeDbAndWait(found.db);
+  const filePath = path.join(STUDENT_NOTES_DIR, path.basename(image.storageFileName));
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* the metadata was safely removed; cleanup can be retried by maintenance */ }
+  res.json({ message: 'Imagem removida.', personalNotebook: notebookPayload(note, found.lesson.id) });
+});
 
 studentRouter.get('/lesson/:lessonId/image-exercises/:exerciseId/original', (req: Request & { auth?: any }, res: Response): void => {
   const found = lessonForMedia(req, res); if (!found) return;
@@ -244,6 +406,7 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
   const streamTicket = generateStreamTicket(user.id, lesson.id, clientIp);
 
   const progress = db.lessonProgress.find(p => p.userId === user.id && p.lessonId === lesson.id);
+  const personalNotebook = notebookFor(db, user.id, lesson.id);
   const mod = db.modules.find(m => m.id === lesson.moduleId);
   const top = db.topics.find(t => t.id === lesson.topicId);
 
@@ -308,6 +471,7 @@ studentRouter.get('/lesson/:id', (req: Request & { auth?: any }, res: Response):
       message: db.systemSettings.telegramHelpMessage || '',
       buttonLabel: db.systemSettings.telegramButtonLabel || '',
     },
+    personalNotebook: notebookPayload(personalNotebook, lesson.id),
     progress: {
       isCompleted: progress?.isCompleted || false,
       progressPercent: progress?.progressPercent || 0,

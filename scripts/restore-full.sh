@@ -39,9 +39,13 @@ fi
 
 tar -tzf "$PACKAGE" >/dev/null
 tar -xzf "$PACKAGE" -C "$WORK_DIR"
-for required in MANIFEST.txt database.dump data.tar.gz env.production; do
+for required in MANIFEST.txt data.tar.gz env.production; do
   [[ -f "$WORK_DIR/$required" ]] || { echo "Erro: pacote incompleto; falta $required." >&2; exit 1; }
 done
+if [[ ! -f "$WORK_DIR/database.dump" && ! -f "$WORK_DIR/database.sql" ]]; then
+  echo "Erro: pacote incompleto; falta database.dump ou database.sql." >&2
+  exit 1
+fi
 
 if [[ ! -f "$PROJECT_DIR/.env" ]]; then
   echo "Erro: clone o projeto e crie uma instalação inicial antes da restauração." >&2
@@ -69,7 +73,11 @@ for attempt in $(seq 1 60); do
 done
 
 echo "Restaurando o banco..."
-cat "$WORK_DIR/database.dump" | "${COMPOSE[@]}" exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner'
+if [[ -f "$WORK_DIR/database.dump" ]]; then
+  cat "$WORK_DIR/database.dump" | "${COMPOSE[@]}" exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner'
+else
+  cat "$WORK_DIR/database.sql" | "${COMPOSE[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+fi
 
 echo "Restaurando arquivos, materiais e vídeos nos volumes do Compose..."
 "${COMPOSE[@]}" run --rm --no-deps --entrypoint tar app xzf - -C /app/data < "$WORK_DIR/data.tar.gz"

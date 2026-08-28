@@ -4,7 +4,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
-import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, UPLOAD_TMP_DIR, ImageAsset } from '../db.js';
+import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, STUDENT_NOTES_DIR, UPLOAD_TMP_DIR, ImageAsset, StudentLessonNote } from '../db.js';
 import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
 import { logAudit } from '../audit.js';
 import { sendSmtpTestEmail, sendWelcomeEmail } from '../email.js';
@@ -108,11 +108,23 @@ function removeLessonMedia(lesson: Lesson): void {
   }
 }
 
+function removeStudentLessonNotes(db: ReturnType<typeof readDb>, predicate: (note: StudentLessonNote) => boolean): void {
+  const removed = db.studentLessonNotes.filter(predicate);
+  for (const note of removed) {
+    for (const image of note.images || []) {
+      const filePath = path.join(STUDENT_NOTES_DIR, path.basename(image.storageFileName));
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+  }
+  db.studentLessonNotes = db.studentLessonNotes.filter(note => !predicate(note));
+}
+
 function removeLessonsAndRelatedData(db: ReturnType<typeof readDb>, lessonIds: string[]): void {
   const idSet = new Set(lessonIds);
   db.lessons.filter(lesson => idSet.has(lesson.id)).forEach(lesson => { removeLessonVideo(lesson); removeLessonMaterials(lesson); removeLessonMedia(lesson); });
   db.lessons = db.lessons.filter(lesson => !idSet.has(lesson.id));
   db.lessonProgress = db.lessonProgress.filter(progress => !idSet.has(progress.lessonId));
+  removeStudentLessonNotes(db, note => idSet.has(note.lessonId));
   db.userContentOverrides = db.userContentOverrides.filter(override => !(override.contentType === 'LESSON' && idSet.has(override.contentId)));
 }
 
@@ -634,6 +646,7 @@ adminRouter.delete('/users/:id', (req: Request & { auth?: any }, res: Response):
   db.lessonProgress = db.lessonProgress.filter(p => p.userId !== user.id);
   db.userContentOverrides = db.userContentOverrides.filter(o => o.userId !== user.id);
   db.passwordResetTokens = db.passwordResetTokens.filter(t => t.userId !== user.id);
+  removeStudentLessonNotes(db, note => note.userId === user.id);
   writeDb(db);
   logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'DELETE_STUDENT', entityType: 'USER', entityId: user.id, details: { email: user.email } });
   res.json({ message: 'Aluno removido com sucesso.' });
