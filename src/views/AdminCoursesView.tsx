@@ -49,6 +49,7 @@ export const AdminCoursesView: React.FC = () => {
   const [uploadStatus, setUploadStatus] = useState('');
   const activeUploadRef = useRef<XMLHttpRequest | null>(null);
   const [lessonError, setLessonError] = useState<string | null>(null);
+  const [lessonNotice, setLessonNotice] = useState<string | null>(null);
 
   const fetchTree = async () => {
     setLoading(true);
@@ -277,6 +278,38 @@ export const AdminCoursesView: React.FC = () => {
       alert(e instanceof Error ? e.message : 'Não foi possível excluir a aula.');
     }
   };
+
+  const deleteLessonMedia = async (url: string, confirmation: string, successMessage: string) => {
+    if (!editingLessonId || !confirm(confirmation)) return;
+    setLessonError(null); setLessonNotice(null);
+    try {
+      const response = await fetch(url, { method: 'DELETE' });
+      const data = await readApiPayload(response);
+      if (!response.ok) throw new Error(data.error || 'Não foi possível excluir o arquivo.');
+      await fetchTree();
+      setLessonNotice(successMessage);
+    } catch (error) {
+      setLessonError(error instanceof Error ? error.message : 'Não foi possível excluir o arquivo.');
+    }
+  };
+
+  const handleDeleteMainVideo = () => deleteLessonMedia(
+    `/api/admin/lessons/${editingLessonId}/video`,
+    'Excluir o vídeo principal desta aula? O arquivo será removido definitivamente do servidor.',
+    'Vídeo principal removido com sucesso.'
+  );
+
+  const handleDeletePracticalVideo = (videoId: string, title: string) => deleteLessonMedia(
+    `/api/admin/lessons/${editingLessonId}/practical-videos/${videoId}`,
+    `Excluir o vídeo prático “${title}”? O arquivo será removido definitivamente do servidor.`,
+    'Vídeo prático removido com sucesso.'
+  );
+
+  const handleDeleteImageExercise = (exerciseId: string, title: string) => deleteLessonMedia(
+    `/api/admin/lessons/${editingLessonId}/image-exercises/${exerciseId}`,
+    `Excluir o exercício de imagens “${title}”, incluindo as imagens enviadas? Esta ação não pode ser desfeita.`,
+    'Exercício de imagens removido com sucesso.'
+  );
 
   if (loading) {
     return (
@@ -613,10 +646,13 @@ export const AdminCoursesView: React.FC = () => {
               <div className="space-y-1">
                 <label className="font-semibold text-neutral-300">Arquivo de Vídeo (MP4/WebM)</label>
                 {editingLesson?.videoFileName && (
-                  <p className="text-[10px] text-emerald-400 break-all">
-                    Arquivo atual: {editingLesson.videoFileName}
-                    {editingLesson.videoUploadedAt ? ` • enviado em ${new Date(editingLesson.videoUploadedAt).toLocaleString('pt-BR')}` : ''}
-                  </p>
+                  <div className="flex items-start justify-between gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5">
+                    <p className="text-[10px] text-emerald-400 break-all">
+                      Arquivo atual: {editingLesson.videoFileName}
+                      {editingLesson.videoUploadedAt ? ` • enviado em ${new Date(editingLesson.videoUploadedAt).toLocaleString('pt-BR')}` : ''}
+                    </p>
+                    <button type="button" onClick={handleDeleteMainVideo} className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title="Excluir vídeo principal"><Trash2 className="h-3.5 w-3.5" />Excluir</button>
+                  </div>
                 )}
                 <input
                   type="file"
@@ -653,19 +689,25 @@ export const AdminCoursesView: React.FC = () => {
 
               <div className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950/50 p-3">
                 <div className="flex items-center justify-between"><label className="font-semibold text-neutral-300">Vídeos curtos — Operando na prática</label><button type="button" onClick={() => setPracticalDrafts(items => [...items, { title: '', description: '', file: null }])} className="text-amber-400 font-bold">+ Adicionar</button></div>
-                {editingLesson?.practicalVideos?.map(video => <p key={video.id} className="text-[10px] text-emerald-400">Vídeo atual: {video.title}</p>)}
+                {editingLesson?.practicalVideos?.map(video => <div key={video.id} className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5"><p className="truncate text-[10px] text-emerald-400">Vídeo atual: {video.title}</p><button type="button" onClick={() => handleDeletePracticalVideo(video.id, video.title)} className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title={`Excluir ${video.title}`}><Trash2 className="h-3.5 w-3.5" />Excluir</button></div>)}
                 {practicalDrafts.map((draft, index) => <div key={index} className="grid grid-cols-1 gap-2 border-t border-neutral-800 pt-2"><input value={draft.title} onChange={e => setPracticalDrafts(items => items.map((item, i) => i === index ? { ...item, title: e.target.value } : item))} placeholder="Título do vídeo prático" className="rounded-lg border border-neutral-800 bg-black px-2 py-2 text-neutral-100" /><input type="file" accept="video/mp4,.mp4" onChange={e => setPracticalDrafts(items => items.map((item, i) => i === index ? { ...item, file: e.target.files?.[0] || null } : item))} className="text-[10px] text-neutral-400" /><button type="button" onClick={() => setPracticalDrafts(items => items.filter((_, i) => i !== index))} className="text-left text-[10px] text-rose-400">Remover</button></div>)}
               </div>
 
               <div className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950/50 p-3">
                 <div className="flex items-center justify-between"><label className="font-semibold text-neutral-300">Exercícios de imagem</label><button type="button" onClick={() => setImageDrafts(items => [...items, { title: '', description: '', original: null, corrected: null }])} className="text-amber-400 font-bold">+ Adicionar</button></div>
-                {editingLesson?.imageExercises?.map(exercise => <p key={exercise.id} className="text-[10px] text-emerald-400">Exercício atual: {exercise.title}</p>)}
+                {editingLesson?.imageExercises?.map(exercise => <div key={exercise.id} className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5"><p className="truncate text-[10px] text-emerald-400">Exercício atual: {exercise.title}</p><button type="button" onClick={() => handleDeleteImageExercise(exercise.id, exercise.title)} className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title={`Excluir ${exercise.title}`}><Trash2 className="h-3.5 w-3.5" />Excluir</button></div>)}
                 {imageDrafts.map((draft, index) => <div key={index} className="grid grid-cols-1 gap-2 border-t border-neutral-800 pt-2"><input value={draft.title} onChange={e => setImageDrafts(items => items.map((item, i) => i === index ? { ...item, title: e.target.value } : item))} placeholder="Título do exercício" className="rounded-lg border border-neutral-800 bg-black px-2 py-2 text-neutral-100" /><label className="text-[10px] text-neutral-400">Imagem sem correção (obrigatória)<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setImageDrafts(items => items.map((item, i) => i === index ? { ...item, original: e.target.files?.[0] || null } : item))} className="block text-[10px]" /></label><label className="text-[10px] text-neutral-400">Imagem com correção (opcional)<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setImageDrafts(items => items.map((item, i) => i === index ? { ...item, corrected: e.target.files?.[0] || null } : item))} className="block text-[10px]" /></label><button type="button" onClick={() => setImageDrafts(items => items.filter((_, i) => i !== index))} className="text-left text-[10px] text-rose-400">Remover</button></div>)}
               </div>
 
               {lessonError && (
                 <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
                   {lessonError}
+                </div>
+              )}
+
+              {lessonNotice && (
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                  {lessonNotice}
                 </div>
               )}
 

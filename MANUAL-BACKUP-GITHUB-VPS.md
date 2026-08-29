@@ -30,15 +30,33 @@ Se sua branch principal tiver outro nome, troque `main` pelo nome correto.
 No console SSH do Google Cloud, entre na pasta onde o projeto foi clonado e execute:
 
 ```bash
-cd /caminho/do/projeto
+cd /opt/aulas-online
 sudo bash ./scripts/backup-full.sh /opt/backups
-git pull origin main
+
+# Corrige apenas as permissões internas do Git se algum comando anterior
+# tiver sido executado com sudo. Banco e arquivos da plataforma não mudam.
+sudo chown -R "$USER":"$USER" .git
+
+# Atualiza o código sem descartar alterações locais.
+git fetch origin main
+git merge --ff-only origin/main
+git log -1 --oneline
+
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up -d --build
+
+# A aplicação leva alguns segundos para iniciar.
+sleep 20
 sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml ps
 curl -fsS http://127.0.0.1:3000/api/health
 ```
 
 Esse procedimento faz antes um backup da VPS e atualiza somente o código. Banco, alunos, vídeos, materiais, imagens e anotações existentes continuam preservados nos volumes Docker.
+
+Se o comando `git merge --ff-only origin/main` apresentar erro, não use `git reset --hard`. Veja primeiro as alterações locais com:
+
+```bash
+git status --short
+```
 
 ## 4. Restaurar o backup local na VPS (somente se quiser substituir todos os dados da VPS)
 
