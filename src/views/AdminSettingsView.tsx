@@ -85,6 +85,14 @@ export const AdminSettingsView: React.FC = () => {
   };
 
   const handleCreateAdmin = async () => {
+    if (!adminForm.name.trim() || !adminForm.email.trim()) {
+      setAdminMessage({ type: 'error', text: 'Informe nome e e-mail para cadastrar um administrador.' });
+      return;
+    }
+    if (!adminForm.autoGeneratePassword && adminForm.password.length < 8) {
+      setAdminMessage({ type: 'error', text: 'A senha inicial precisa ter pelo menos 8 caracteres.' });
+      return;
+    }
     setAdminSaving(true); setAdminMessage(null); setCreatedAdminPassword(null);
     try {
       const res = await fetch('/api/admin/admins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(adminForm) });
@@ -412,10 +420,10 @@ export const AdminSettingsView: React.FC = () => {
             </div>
             {adminMessage && <div className={`p-3 rounded-xl text-xs font-semibold ${adminMessage.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}`}>{adminMessage.text}</div>}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs border-t border-neutral-800 pt-5">
-              <input required value={adminForm.name} onChange={e => setAdminForm({ ...adminForm, name: e.target.value })} placeholder="Nome do administrador" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
-              <input required type="email" value={adminForm.email} onChange={e => setAdminForm({ ...adminForm, email: e.target.value })} placeholder="E-mail" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input value={adminForm.name} onChange={e => setAdminForm({ ...adminForm, name: e.target.value })} placeholder="Nome do administrador" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
+              <input type="email" value={adminForm.email} onChange={e => setAdminForm({ ...adminForm, email: e.target.value })} placeholder="E-mail" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
               <input value={adminForm.phone} onChange={e => setAdminForm({ ...adminForm, phone: e.target.value })} placeholder="Telefone (opcional)" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />
-              {!adminForm.autoGeneratePassword && <input required minLength={8} type="password" value={adminForm.password} onChange={e => setAdminForm({ ...adminForm, password: e.target.value })} placeholder="Senha inicial" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />}
+              {!adminForm.autoGeneratePassword && <input minLength={8} type="password" value={adminForm.password} onChange={e => setAdminForm({ ...adminForm, password: e.target.value })} placeholder="Senha inicial" className="px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100" />}
               <label className="flex items-center gap-2 text-neutral-300"><input type="checkbox" checked={adminForm.autoGeneratePassword} onChange={e => setAdminForm({ ...adminForm, autoGeneratePassword: e.target.checked })} className="rounded accent-amber-500" /> Gerar senha automaticamente</label>
               <button disabled={adminSaving} type="button" onClick={() => void handleCreateAdmin()} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-500 text-neutral-950 rounded-xl font-bold uppercase"><UserPlus className="w-3.5 h-3.5" /> {adminSaving ? 'Criando...' : 'Cadastrar administrador'}</button>
               {createdAdminPassword && <p className="sm:col-span-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300">Senha inicial: <strong className="font-mono">{createdAdminPassword}</strong> — copie agora; ela não será exibida novamente.</p>}
@@ -427,6 +435,7 @@ export const AdminSettingsView: React.FC = () => {
         <div className="flex justify-end">
           <button
             type="submit"
+            formNoValidate
             disabled={saving}
             className="flex items-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold uppercase tracking-wider text-xs rounded-xl shadow-lg shadow-amber-900/30 transition-all cursor-pointer"
           >
