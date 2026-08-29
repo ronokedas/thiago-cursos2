@@ -52,7 +52,9 @@ const AppContent: React.FC = () => {
   const { user, loading, concurrentSessionAlert, dismissConcurrentAlert } = useAuth();
 
   // Auth flow states
-  const [authView, setAuthView] = useState<'login' | 'forgot_password'>('login');
+  const [authView, setAuthView] = useState<'login' | 'forgot_password'>(() => (
+    new URLSearchParams(window.location.search).has('resetToken') ? 'forgot_password' : 'login'
+  ));
 
   // Student view states
   const [studentTab, setStudentTab] = useState<'dashboard' | 'course' | 'profile'>('dashboard');

@@ -58,6 +58,23 @@ Se o comando `git merge --ff-only origin/main` apresentar erro, não use `git re
 git status --short
 ```
 
+### 3.1. Recriar containers depois de alterar apenas o `.env`
+
+Se você modificou somente as variáveis do `.env` (por exemplo, SMTP), não precisa baixar o código novamente. Execute:
+
+```bash
+cd /opt/aulas-online
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up -d --force-recreate
+```
+
+Se também houve alteração de código, use `--build`:
+
+```bash
+sudo docker compose --env-file .env -f deploy/docker-compose.vps.yml up -d --build --force-recreate
+```
+
+Os volumes Docker não são removidos; banco, vídeos, materiais, imagens e anotações continuam preservados.
+
 ## 4. Restaurar o backup local na VPS (somente se quiser substituir todos os dados da VPS)
 
 Primeiro, no computador local, envie o pacote para a VPS. Substitua `USUARIO`, `IP_DA_VPS` e o nome real do arquivo:
