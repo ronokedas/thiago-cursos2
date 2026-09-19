@@ -4,13 +4,17 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
-import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, STUDENT_NOTES_DIR, UPLOAD_TMP_DIR, ImageAsset, StudentLessonNote } from '../db.js';
+import { readDb, writeDb, writeDbAndWait, User, Course, Module, Topic, Lesson, UserContentOverride, VIDEO_DIR, MATERIAL_DIR, LESSON_MEDIA_DIR, STUDENT_NOTES_DIR, UPLOAD_TMP_DIR, ImageAsset, StudentLessonNote, SystemNotification } from '../db.js';
 import { requireAdmin, hashPassword, generateRandomPassword } from '../auth.js';
 import { logAudit } from '../audit.js';
 import { sendSmtpTestEmail, sendWelcomeEmail } from '../email.js';
 import { encryptSecret } from '../secrets.js';
 
 export const adminRouter = Router();
+
+function sanitizeFilename(name: string): string {
+  return String(name || '').trim().replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, '_');
+}
 
 function onlyDigits(value: unknown): string {
   return String(value || '').replace(/\D/g, '');
@@ -1188,6 +1192,45 @@ adminRouter.delete('/lessons/:id', (req: Request & { auth?: any }, res: Response
   res.json({ message: 'Aula removida com sucesso.' });
 });
 
+// GET /api/admin/lessons/:id/download-video
+adminRouter.get('/lessons/:id/download-video', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb();
+  const lesson = db.lessons.find(l => l.id === req.params.id);
+  if (!lesson) {
+    res.status(404).json({ error: 'Aula não encontrada.' });
+    return;
+  }
+  if (!lesson.videoFileName) {
+    res.status(404).json({ error: 'Esta aula não possui vídeo enviado.' });
+    return;
+  }
+  const filePath = path.join(VIDEO_DIR, lesson.videoFileName);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'Arquivo de vídeo não encontrado no servidor.' });
+    return;
+  }
+
+  const safeTitle = sanitizeFilename(lesson.title) || `aula_${lesson.id}`;
+  const ext = path.extname(lesson.videoFileName) || '.mp4';
+  const downloadName = `${safeTitle}${ext}`;
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'DOWNLOAD_LESSON_VIDEO',
+    entityType: 'LESSON',
+    entityId: lesson.id,
+    details: { filename: lesson.videoFileName, downloadName },
+  });
+
+  res.download(filePath, downloadName, err => {
+    if (err && !res.headersSent) {
+      res.status(500).json({ error: 'Falha ao realizar o download do vídeo.' });
+    }
+  });
+});
+
 // POST /api/admin/lessons/:id/upload-video
 adminRouter.post('/lessons/:id/upload-video', upload.single('video'), async (req: Request & { auth?: any }, res: Response): Promise<void> => {
   const { id } = req.params;
@@ -1231,6 +1274,30 @@ adminRouter.post('/lessons/:id/upload-video', upload.single('video'), async (req
   // A replacement changes the primary lesson. Every student must finish the
   // new primary video before private complementary media is available again.
   for (const progress of db.lessonProgress.filter(item => item.lessonId === lesson.id)) progress.mainVideoEndedAt = null;
+
+  // Generate notification for students
+  const moduleObj = db.modules.find(m => m.id === lesson.moduleId);
+  const courseObj = db.courses.find(c => c.id === lesson.courseId);
+  db.systemNotifications = (db.systemNotifications || []).filter(
+    n => !(n.type === 'NEW_VIDEO' && n.lessonId === lesson.id)
+  );
+  db.systemNotifications.push({
+    id: `notif_${crypto.randomUUID()}`,
+    type: 'NEW_VIDEO',
+    title: 'Nova aula adicionada',
+    message: `A aula "${lesson.title}" está disponível no módulo "${moduleObj?.title || 'Curso'}".`,
+    courseId: lesson.courseId,
+    moduleId: lesson.moduleId,
+    lessonId: lesson.id,
+    videoTitle: lesson.title,
+    moduleTitle: moduleObj?.title || 'Módulo',
+    courseTitle: courseObj?.title || 'Mentoria A Mecânica',
+    createdAt: new Date().toISOString(),
+  });
+  if (db.systemNotifications.length > 100) {
+    db.systemNotifications = db.systemNotifications.slice(-100);
+  }
+
   try {
     writeDb(db);
   } catch (error) {
@@ -1273,9 +1340,69 @@ adminRouter.post('/lessons/:id/practical-videos', upload.single('video'), async 
   try { await optimizeMp4(file.path, finalPath); } catch (error) { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); res.status(400).json({ error: error instanceof Error ? error.message : 'Falha ao otimizar vídeo.' }); return; }
   if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
   const video = { id: `pvid_${crypto.randomUUID()}`, title: String(req.body.title).trim(), description: String(req.body.description || '').trim(), position: lesson.practicalVideos.length + 1, videoFileName: filename, sizeBytes: fs.statSync(finalPath).size, durationSeconds: Number(req.body.durationSeconds) || 0, uploadedAt: new Date().toISOString() };
-  lesson.practicalVideos.push(video); await writeDbAndWait(db);
+  lesson.practicalVideos.push(video);
+
+  // Generate notification for practical video
+  const moduleObj = db.modules.find(m => m.id === lesson.moduleId);
+  const courseObj = db.courses.find(c => c.id === lesson.courseId);
+  db.systemNotifications = db.systemNotifications || [];
+  db.systemNotifications.push({
+    id: `notif_${crypto.randomUUID()}`,
+    type: 'NEW_PRACTICAL_VIDEO',
+    title: 'Novo vídeo prático liberado',
+    message: `Novo vídeo prático "${video.title}" adicionado na aula "${lesson.title}".`,
+    courseId: lesson.courseId,
+    moduleId: lesson.moduleId,
+    lessonId: lesson.id,
+    practicalVideoId: video.id,
+    videoTitle: video.title,
+    moduleTitle: moduleObj?.title || 'Módulo',
+    courseTitle: courseObj?.title || 'Mentoria A Mecânica',
+    createdAt: new Date().toISOString(),
+  });
+  if (db.systemNotifications.length > 100) {
+    db.systemNotifications = db.systemNotifications.slice(-100);
+  }
+
+  await writeDbAndWait(db);
   logAudit({ actorId: req.auth.user.id, actorName: req.auth.user.name, actorRole: req.auth.user.role, action: 'UPLOAD_PRACTICAL_VIDEO', entityType: 'LESSON', entityId: lesson.id, details: { videoId: video.id, title: video.title } });
   res.status(201).json({ message: 'Vídeo prático enviado e otimizado.', video: { ...video, videoFileName: undefined } });
+});
+
+// GET /api/admin/lessons/:id/practical-videos/:videoId/download
+adminRouter.get('/lessons/:id/practical-videos/:videoId/download', (req: Request & { auth?: any }, res: Response): void => {
+  const db = readDb();
+  const lesson = db.lessons.find(item => item.id === req.params.id);
+  const video = lesson?.practicalVideos?.find(item => item.id === req.params.videoId);
+  if (!lesson || !video) {
+    res.status(404).json({ error: 'Vídeo prático não encontrado.' });
+    return;
+  }
+  const filePath = path.join(VIDEO_DIR, path.basename(video.videoFileName));
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'Arquivo de vídeo não encontrado no servidor.' });
+    return;
+  }
+
+  const safeTitle = sanitizeFilename(video.title) || `video_pratico_${video.id}`;
+  const ext = path.extname(video.videoFileName) || '.mp4';
+  const downloadName = `${safeTitle}${ext}`;
+
+  logAudit({
+    actorId: req.auth.user.id,
+    actorName: req.auth.user.name,
+    actorRole: req.auth.user.role,
+    action: 'DOWNLOAD_PRACTICAL_VIDEO',
+    entityType: 'LESSON',
+    entityId: lesson.id,
+    details: { videoId: video.id, title: video.title, downloadName },
+  });
+
+  res.download(filePath, downloadName, err => {
+    if (err && !res.headersSent) {
+      res.status(500).json({ error: 'Falha ao realizar o download do vídeo.' });
+    }
+  });
 });
 
 adminRouter.delete('/lessons/:id/practical-videos/:videoId', async (req: Request & { auth?: any }, res: Response): Promise<void> => {

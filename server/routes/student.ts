@@ -572,3 +572,159 @@ studentRouter.post('/progress', async (req: Request & { auth?: any }, res: Respo
     },
   });
 });
+
+// GET /api/student/notifications
+studentRouter.get('/notifications', (req: Request & { auth?: any }, res: Response): void => {
+  const user = req.auth.user as User;
+  const db = readDb();
+  const allowedNotifications: any[] = [];
+  const readIds = new Set(
+    (db.userNotificationReads || [])
+      .filter(r => r.userId === user.id)
+      .map(r => r.notificationId)
+  );
+
+  for (const notif of db.systemNotifications || []) {
+    const lesson = db.lessons.find(l => l.id === notif.lessonId);
+    if (!lesson || lesson.status !== 'PUBLISHED') continue;
+
+    // Strict 7-day rule check: if student cannot access this lesson, do not reveal it
+    const access = canUserAccessLesson(user.id, notif.lessonId);
+    if (!access.allowed) continue;
+
+    allowedNotifications.push({
+      id: notif.id,
+      type: notif.type,
+      title: notif.title,
+      message: notif.message,
+      courseId: notif.courseId,
+      moduleId: notif.moduleId,
+      lessonId: notif.lessonId,
+      practicalVideoId: notif.practicalVideoId,
+      videoTitle: notif.videoTitle,
+      moduleTitle: notif.moduleTitle,
+      courseTitle: notif.courseTitle,
+      createdAt: notif.createdAt,
+      isRead: readIds.has(notif.id),
+    });
+  }
+
+  allowedNotifications.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const unreadCount = allowedNotifications.filter(n => !n.isRead).length;
+
+  res.json({
+    notifications: allowedNotifications,
+    unreadCount,
+  });
+});
+
+// POST /api/student/notifications/:id/read
+studentRouter.post('/notifications/:id/read', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const user = req.auth.user as User;
+  const db = readDb();
+  const notificationId = req.params.id;
+
+  const notif = (db.systemNotifications || []).find(n => n.id === notificationId);
+  if (!notif) {
+    res.status(404).json({ error: 'Notificação não encontrada.' });
+    return;
+  }
+
+  const access = canUserAccessLesson(user.id, notif.lessonId);
+  if (!access.allowed) {
+    res.status(403).json({ error: 'Conteúdo ainda não liberado para o seu perfil.' });
+    return;
+  }
+
+  db.userNotificationReads = db.userNotificationReads || [];
+  const alreadyRead = db.userNotificationReads.some(
+    r => r.userId === user.id && r.notificationId === notificationId
+  );
+
+  if (!alreadyRead) {
+    db.userNotificationReads.push({
+      id: `read_${crypto.randomUUID()}`,
+      userId: user.id,
+      notificationId,
+      readAt: new Date().toISOString(),
+    });
+    await writeDbAndWait(db);
+  }
+
+  res.json({ success: true, message: 'Notificação marcada como lida.' });
+});
+
+// POST /api/student/notifications/mark-all-read
+studentRouter.post('/notifications/mark-all-read', async (req: Request & { auth?: any }, res: Response): Promise<void> => {
+  const user = req.auth.user as User;
+  const db = readDb();
+  db.userNotificationReads = db.userNotificationReads || [];
+
+  const readIds = new Set(
+    db.userNotificationReads.filter(r => r.userId === user.id).map(r => r.notificationId)
+  );
+
+  let added = 0;
+  for (const notif of db.systemNotifications || []) {
+    const access = canUserAccessLesson(user.id, notif.lessonId);
+    if (access.allowed && !readIds.has(notif.id)) {
+      db.userNotificationReads.push({
+        id: `read_${crypto.randomUUID()}`,
+        userId: user.id,
+        notificationId: notif.id,
+        readAt: new Date().toISOString(),
+      });
+      readIds.add(notif.id);
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    await writeDbAndWait(db);
+  }
+
+  res.json({ success: true, markedCount: added });
+});
+
+// GET /api/student/recent-updates
+studentRouter.get('/recent-updates', (req: Request & { auth?: any }, res: Response): void => {
+  const user = req.auth.user as User;
+  const db = readDb();
+
+  const updates: any[] = [];
+  const publishedLessons = db.lessons.filter(
+    l => l.status === 'PUBLISHED' && (!!l.videoFileName || (l.practicalVideos && l.practicalVideos.length > 0))
+  );
+
+  for (const lesson of publishedLessons) {
+    // 7-day rule check: skip if student cannot access this lesson
+    const access = canUserAccessLesson(user.id, lesson.id);
+    if (!access.allowed) continue;
+
+    const moduleObj = db.modules.find(m => m.id === lesson.moduleId);
+    const courseObj = db.courses.find(c => c.id === lesson.courseId);
+    const progress = db.lessonProgress.find(p => p.userId === user.id && p.lessonId === lesson.id);
+
+    updates.push({
+      id: lesson.id,
+      lessonId: lesson.id,
+      title: lesson.title,
+      description: lesson.description || '',
+      moduleTitle: moduleObj?.title || 'Módulo',
+      courseTitle: courseObj?.title || 'Mentoria A Mecânica',
+      durationSeconds: lesson.durationSeconds || 0,
+      uploadedAt: lesson.videoUploadedAt || lesson.releaseDate || new Date().toISOString(),
+      isCompleted: progress?.isCompleted || false,
+      progressPercent: progress?.progressPercent || 0,
+      type: 'MAIN_VIDEO',
+    });
+  }
+
+  // Sort newest first
+  updates.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+
+  res.json({
+    updates: updates.slice(0, 10),
+  });
+});
+

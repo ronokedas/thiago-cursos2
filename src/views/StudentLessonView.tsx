@@ -367,15 +367,39 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
             onMainVideoEnded={handleMainVideoEnded}
           />}
 
-          {lessonData.telegram?.url && (
-            <section className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-5 text-sm">
-              <h2 className="font-bold text-sky-200">Dúvidas sobre esta aula?</h2>
-              <p className="mt-1 text-xs leading-relaxed text-neutral-300">{lessonData.telegram.message}</p>
-              <a href={lessonData.telegram.url} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex rounded-xl bg-sky-500 px-4 py-2.5 text-xs font-bold text-white hover:bg-sky-400">
-                {lessonData.telegram.buttonLabel || 'Entrar no grupo do Telegram'}
-              </a>
-            </section>
-          )}
+          {/* Main Lesson Info & Description */}
+          <div className="bg-neutral-800/40 p-6 rounded-2xl border border-neutral-800 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-800/80 pb-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold font-mono uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                    <Play className="w-3 h-3 fill-current" /> Vídeo Principal
+                  </span>
+                  <span className="text-xs text-neutral-500">•</span>
+                  <span className="text-xs text-neutral-400 font-mono">
+                    {Math.floor(lessonData.lesson.durationSeconds / 60)} min
+                  </span>
+                </div>
+                <h1 className="text-lg font-bold text-white tracking-tight">
+                  {lessonData.lesson.title}
+                </h1>
+              </div>
+              {lessonData.progress.isCompleted && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Aula Concluída
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-400">
+                Descrição & Orientações da Aula
+              </h3>
+              <p className="text-sm text-neutral-300 leading-relaxed whitespace-pre-line">
+                {lessonData.lesson.description || 'Assista à aula com atenção, anote os conceitos de leitura de fluxo institucional e aplique no seu plano diário de operações.'}
+              </p>
+            </div>
+          </div>
 
           {/* Navigation Controls */}
           <div className="flex items-center justify-between p-4 bg-neutral-800/40 rounded-2xl border border-neutral-800">
@@ -403,25 +427,30 @@ export const StudentLessonView: React.FC<StudentLessonViewProps> = ({
             </div>
           </div>
 
-          {/* Description & Security Box Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="md:col-span-2 bg-neutral-800/40 p-5 rounded-2xl border border-neutral-800 space-y-2">
-              <h3 className="text-sm font-bold text-neutral-300">Descrição da Aula</h3>
-              <p className="text-sm text-neutral-400 leading-relaxed whitespace-pre-line">
-                {lessonData.lesson.description || 'Assista à aula com atenção, anote os conceitos de leitura de fluxo institucional e aplique no seu plano diário de operações.'}
-              </p>
-            </div>
-
-            <div className="bg-amber-600/10 p-5 rounded-2xl border border-amber-500/20 flex flex-col justify-center space-y-2">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-amber-400" />
-                <span className="text-sm font-bold text-amber-400 uppercase tracking-wide">Aviso de Segurança</span>
+          {/* Security Box */}
+          <div className="bg-amber-600/10 p-5 rounded-2xl border border-amber-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
+                <ShieldCheck className="w-5 h-5" />
               </div>
-              <p className="text-[11px] text-amber-300/80 leading-relaxed">
-                Este conteúdo é exclusivo e individual. O compartilhamento ou gravação não autorizada resultará em bloqueio permanente e rastreio de IP.
-              </p>
+              <div>
+                <span className="text-xs font-bold text-amber-400 uppercase tracking-wide">Aviso de Segurança & Direitos Autorais</span>
+                <p className="text-[11px] text-amber-300/80 leading-relaxed mt-0.5">
+                  Conteúdo protegido por marca d'água individual e rastreabilidade digital. Gravação ou compartilhamento resultará em banimento imediato.
+                </p>
+              </div>
             </div>
           </div>
+
+          {lessonData.telegram?.url && (
+            <section className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-5 text-sm">
+              <h2 className="font-bold text-sky-200">Dúvidas sobre esta aula?</h2>
+              <p className="mt-1 text-xs leading-relaxed text-neutral-300">{lessonData.telegram.message}</p>
+              <a href={lessonData.telegram.url} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex rounded-xl bg-sky-500 px-4 py-2.5 text-xs font-bold text-white hover:bg-sky-400">
+                {lessonData.telegram.buttonLabel || 'Entrar no grupo do Telegram'}
+              </a>
+            </section>
+          )}
 
           {/* Supplementary Materials */}
           {lessonData.lesson.supplementaryMaterials?.length > 0 && (

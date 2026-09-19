@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Play, CheckCircle2, Lock, Clock, Calendar, 
-  Award, ChevronRight, ShieldCheck, AlertCircle, Sparkles, BookOpen 
+  Award, ChevronRight, ShieldCheck, AlertCircle, Sparkles, BookOpen, Bell 
 } from 'lucide-react';
-import { StudentDashboardData, CourseSummary, ModuleSummary } from '../types';
+import { StudentDashboardData, CourseSummary, ModuleSummary, RecentUpdateItem } from '../types';
 import { useAuth } from '../context/AuthContext';
 
 interface StudentDashboardProps {
@@ -15,14 +15,18 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onSelectLess
   const { user } = useAuth();
   const [data, setData] = useState<StudentDashboardData | null>(null);
   const [courseData, setCourseData] = useState<{ course: CourseSummary; modules: ModuleSummary[] } | null>(null);
+  const [recentUpdates, setRecentUpdates] = useState<RecentUpdateItem[]>([]);
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [dashRes, courseRes] = await Promise.all([
+        const [dashRes, courseRes, updatesRes, notifsRes] = await Promise.all([
           fetch('/api/student/dashboard'),
           fetch('/api/student/course'),
+          fetch('/api/student/recent-updates'),
+          fetch('/api/student/notifications'),
         ]);
 
         if (dashRes.ok) {
@@ -32,6 +36,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onSelectLess
         if (courseRes.ok) {
           const c = await courseRes.json();
           setCourseData(c);
+        }
+        if (updatesRes.ok) {
+          const u = await updatesRes.json();
+          setRecentUpdates(u.updates || []);
+        }
+        if (notifsRes.ok) {
+          const n = await notifsRes.json();
+          setUnreadNotificationsCount(n.unreadCount || 0);
         }
       } catch (err) {
         console.error(err);
@@ -67,6 +79,33 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onSelectLess
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      {/* New videos notification banner */}
+      {unreadNotificationsCount > 0 && (
+        <div className="bg-gradient-to-r from-amber-600/20 via-amber-500/10 to-transparent border border-amber-500/30 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg shadow-amber-500/5 animate-in fade-in duration-300">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-500 text-neutral-950 rounded-xl font-bold shrink-0">
+              <Bell className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-white">
+                Você tem {unreadNotificationsCount} nova{unreadNotificationsCount > 1 ? 's' : ''} notificaç{unreadNotificationsCount > 1 ? 'ões' : 'ão'} de aula{unreadNotificationsCount > 1 ? 's' : ''} liberada{unreadNotificationsCount > 1 ? 's' : ''}!
+              </p>
+              <p className="text-[11px] text-neutral-400 mt-0.5">
+                Conteúdos recentes adicionados ao sistema já estão disponíveis para o seu acesso.
+              </p>
+            </div>
+          </div>
+          {recentUpdates.length > 0 && (
+            <button
+              onClick={() => onSelectLesson(recentUpdates[0].lessonId)}
+              className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-bold rounded-xl transition-all shadow-sm shrink-0 cursor-pointer"
+            >
+              Assistir mais recente
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Notice Banner if active */}
       {data.settings.noticeBanner && (
         <div className="bg-amber-600/10 border border-amber-500/20 p-4 rounded-2xl flex items-center gap-3 text-amber-300 text-xs font-medium">
@@ -175,6 +214,75 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onSelectLess
           </div>
         </div>
       </div>
+
+      {/* Recent Updates & Newly Added Videos (Filtered by 7-day rule) */}
+      {recentUpdates.length > 0 && (
+        <section className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold font-mono px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  <Sparkles className="w-3 h-3" /> ÚLTIMAS ATUALIZAÇÕES
+                </span>
+                <span className="text-[11px] text-neutral-500">•</span>
+                <span className="text-xs text-neutral-400">Vídeos liberados para o seu perfil</span>
+              </div>
+              <h2 className="text-lg font-bold text-white tracking-tight">
+                Últimos Vídeos Adicionados no Sistema
+              </h2>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {recentUpdates.slice(0, 6).map(item => (
+              <div
+                key={item.id}
+                className="group relative flex flex-col justify-between p-5 rounded-2xl border border-neutral-800 bg-[#141414] hover:border-amber-500/40 hover:bg-neutral-900/60 transition-all shadow-lg hover:shadow-amber-500/5"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold text-neutral-400 bg-neutral-800/80 px-2.5 py-1 rounded-lg truncate border border-neutral-700/50">
+                      {item.moduleTitle}
+                    </span>
+                    <span className="text-[10px] text-amber-400 font-mono font-semibold shrink-0">
+                      {Math.floor(item.durationSeconds / 60)} min
+                    </span>
+                  </div>
+
+                  <h3 className="text-sm font-bold text-white group-hover:text-amber-300 transition-colors line-clamp-2">
+                    {item.title}
+                  </h3>
+
+                  {item.description ? (
+                    <p className="text-xs text-neutral-400 line-clamp-2 leading-relaxed">
+                      {item.description}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-neutral-500 italic">
+                      Aula com vídeo e materiais liberados.
+                    </p>
+                  )}
+                </div>
+
+                <div className="pt-4 mt-3 border-t border-neutral-800/80 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-1.5 text-[11px] text-neutral-500">
+                    <Clock className="w-3.5 h-3.5 text-neutral-400" />
+                    <span>{new Date(item.uploadedAt).toLocaleDateString('pt-BR')}</span>
+                  </div>
+
+                  <button
+                    onClick={() => onSelectLesson(item.lessonId)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-neutral-950 text-xs font-bold transition-all border border-amber-500/20 cursor-pointer group-hover:scale-105"
+                  >
+                    <Play className="w-3 h-3 fill-current" />
+                    <span>Assistir</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Course Structure & Progressive Unlock Status */}
       <div className="space-y-5">

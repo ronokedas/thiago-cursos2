@@ -224,6 +224,28 @@ export interface SystemSettings {
   };
 }
 
+export interface SystemNotification {
+  id: string;
+  type: 'NEW_VIDEO' | 'NEW_PRACTICAL_VIDEO' | 'SYSTEM_ANNOUNCEMENT';
+  title: string;
+  message: string;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+  practicalVideoId?: string;
+  videoTitle: string;
+  moduleTitle?: string;
+  courseTitle?: string;
+  createdAt: string;
+}
+
+export interface UserNotificationRead {
+  id: string;
+  userId: string;
+  notificationId: string;
+  readAt: string;
+}
+
 export interface DatabaseSchema {
   users: User[];
   sessions: Session[];
@@ -236,6 +258,8 @@ export interface DatabaseSchema {
   studentLessonNotes: StudentLessonNote[];
   auditLogs: AuditLog[];
   passwordResetTokens: PasswordResetToken[];
+  systemNotifications: SystemNotification[];
+  userNotificationReads: UserNotificationRead[];
   systemSettings: SystemSettings;
 }
 
@@ -279,6 +303,8 @@ export function initDatabase(): void {
       studentLessonNotes: [],
       auditLogs: [],
       passwordResetTokens: [],
+      systemNotifications: [],
+      userNotificationReads: [],
       systemSettings: {
         id: 'settings-default',
         platformName: 'Mentoria A Mecânica — Trader Thiago',
@@ -329,6 +355,8 @@ export function readDb(): DatabaseSchema {
       studentLessonNotes: [],
       auditLogs: [],
       passwordResetTokens: [],
+      systemNotifications: [],
+      userNotificationReads: [],
       systemSettings: {
         id: 'settings-default',
         platformName: 'Mentoria A Mecânica — Trader Thiago',
@@ -359,6 +387,8 @@ export async function hydrateDatabaseFromPostgres(): Promise<void> {
 }
 
 function normalizeDatabase(data: DatabaseSchema): DatabaseSchema {
+  data.systemNotifications = Array.isArray(data.systemNotifications) ? data.systemNotifications : [];
+  data.userNotificationReads = Array.isArray(data.userNotificationReads) ? data.userNotificationReads : [];
   data.studentLessonNotes = Array.isArray(data.studentLessonNotes) ? data.studentLessonNotes : [];
   for (const note of data.studentLessonNotes) {
     const legacyText = typeof (note as StudentLessonNote & { text?: unknown }).text === 'string'

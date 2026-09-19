@@ -256,3 +256,34 @@ export interface PersonalNotebook {
   }>;
   images: PersonalNotebookImage[];
 }
+
+export interface SystemNotificationItem {
+  id: string;
+  type: 'NEW_VIDEO' | 'NEW_PRACTICAL_VIDEO' | 'SYSTEM_ANNOUNCEMENT';
+  title: string;
+  message: string;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+  practicalVideoId?: string;
+  videoTitle: string;
+  moduleTitle?: string;
+  courseTitle?: string;
+  createdAt: string;
+  isRead: boolean;
+}
+
+export interface RecentUpdateItem {
+  id: string;
+  lessonId: string;
+  title: string;
+  description: string;
+  moduleTitle: string;
+  courseTitle: string;
+  durationSeconds: number;
+  uploadedAt: string;
+  isCompleted: boolean;
+  progressPercent: number;
+  type: 'MAIN_VIDEO' | 'PRACTICAL_VIDEO';
+}
+

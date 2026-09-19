@@ -173,6 +173,10 @@ const AppContent: React.FC = () => {
             void openFirstLesson();
           }
         }}
+        onSelectLesson={id => {
+          setActiveLessonId(id);
+          setStudentTab('course');
+        }}
       />
 
       {/* Main Student Experience */}

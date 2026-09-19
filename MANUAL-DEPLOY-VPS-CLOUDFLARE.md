@@ -225,13 +225,27 @@ e as regras de firewall da Google Cloud para as portas 80 e 443.
 
 Acesse https://thiago-trader.4dtech.com.br, entre com o administrador definido no .env, troque a senha e configure o SMTP em Configurações.
 
-## 9. Atualizar depois
+## 9. Atualizar depois (Script Inteligente ou Manual)
 
-Sempre que uma nova versão for publicada na branch `main`, use este roteiro
-direto no SSH da VPS. Você pode executar os comandos estando em qualquer
-diretório; o primeiro `cd` leva até a instalação correta:
+### Método Recomendado: Script Inteligente Automático
 
+Para atualizar tudo com um único comando na VPS (o script realiza backup preventivo automático, sincroniza o repositório a partir do GitHub, reconstrói os containers com o novo código, valida o healthcheck e limpa imagens antigas liberando espaço em disco):
+
+~~~bash
+sudo bash /opt/aulas-online/scripts/update-vps.sh
 ~~~
+
+Ou execute diretamente via download oficial do GitHub:
+
+~~~bash
+sudo curl -fsSL https://raw.githubusercontent.com/ronokedas/thiago-cursos2/main/scripts/update-vps.sh | sudo bash
+~~~
+
+### Método Manual Alternativo
+
+Caso prefira rodar os passos individualmente:
+
+~~~bash
 cd /opt/aulas-online
 sudo bash ./scripts/backup-full.sh /opt/backups
 sudo git fetch origin

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   BookOpen, Plus, Edit, Trash2, Video, Upload, 
-  Clock, Lock, CheckCircle2, AlertCircle, ChevronDown, ChevronRight, X, Play 
+  Clock, Lock, CheckCircle2, AlertCircle, ChevronDown, ChevronRight, X, Play, Download 
 } from 'lucide-react';
 import { CourseSummary, ModuleSummary, LessonSummary } from '../types';
 
@@ -469,6 +469,16 @@ export const AdminCoursesView: React.FC = () => {
                         </div>
 
                         <div className="flex items-center gap-2">
+                          {lesson.hasVideo && (
+                            <a
+                              href={`/api/admin/lessons/${lesson.id}/download-video`}
+                              download
+                              className="p-1.5 text-neutral-400 hover:text-amber-400 rounded transition-colors"
+                              title="Baixar Vídeo MP4 da Aula"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </a>
+                          )}
                           <button type="button" onClick={() => { setEditingLessonId(lesson.id); setSelectedTopicId(topic.id); setLessonTitle(lesson.title); setLessonDesc(lesson.description || ''); setLessonDuration(lesson.durationSeconds); setVideoFile(null); setMaterialFile(null); setLessonError(null); setLessonModalOpen(true); }} className="p-1.5 text-neutral-500 hover:text-amber-400 rounded transition-colors" title="Editar Aula"><Edit className="w-3.5 h-3.5" /></button>
                           <button
                             onClick={() => handleDeleteLesson(lesson.id)}
@@ -622,12 +632,15 @@ export const AdminCoursesView: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="font-semibold text-neutral-300">Descrição da Aula</label>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-neutral-300">Descrição do Vídeo Principal / Aula</label>
+                  <span className="text-[10px] text-neutral-500">Exibida diretamente aos alunos abaixo do player</span>
+                </div>
                 <textarea
-                  rows={2}
+                  rows={4}
                   value={lessonDesc}
                   onChange={e => setLessonDesc(e.target.value)}
-                  placeholder="Instruções para o aluno..."
+                  placeholder="Escreva orientações, pontos de entrada, conceitos-chave ou resumo que os alunos verão logo abaixo do player..."
                   className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-amber-500"
                 />
               </div>
@@ -651,7 +664,18 @@ export const AdminCoursesView: React.FC = () => {
                       Arquivo atual: {editingLesson.videoFileName}
                       {editingLesson.videoUploadedAt ? ` • enviado em ${new Date(editingLesson.videoUploadedAt).toLocaleString('pt-BR')}` : ''}
                     </p>
-                    <button type="button" onClick={handleDeleteMainVideo} className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title="Excluir vídeo principal"><Trash2 className="h-3.5 w-3.5" />Excluir</button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <a
+                        href={`/api/admin/lessons/${editingLesson.id}/download-video`}
+                        download
+                        className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/15 hover:text-amber-200"
+                        title="Baixar vídeo principal"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Baixar
+                      </a>
+                      <button type="button" onClick={handleDeleteMainVideo} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title="Excluir vídeo principal"><Trash2 className="h-3.5 w-3.5" />Excluir</button>
+                    </div>
                   </div>
                 )}
                 <input
@@ -689,7 +713,23 @@ export const AdminCoursesView: React.FC = () => {
 
               <div className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950/50 p-3">
                 <div className="flex items-center justify-between"><label className="font-semibold text-neutral-300">Vídeos curtos — Operando na prática</label><button type="button" onClick={() => setPracticalDrafts(items => [...items, { title: '', description: '', file: null }])} className="text-amber-400 font-bold">+ Adicionar</button></div>
-                {editingLesson?.practicalVideos?.map(video => <div key={video.id} className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5"><p className="truncate text-[10px] text-emerald-400">Vídeo atual: {video.title}</p><button type="button" onClick={() => handleDeletePracticalVideo(video.id, video.title)} className="shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title={`Excluir ${video.title}`}><Trash2 className="h-3.5 w-3.5" />Excluir</button></div>)}
+                {editingLesson?.practicalVideos?.map(video => (
+                  <div key={video.id} className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5">
+                    <p className="truncate text-[10px] text-emerald-400">Vídeo atual: {video.title}</p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <a
+                        href={`/api/admin/lessons/${editingLesson.id}/practical-videos/${video.id}/download`}
+                        download
+                        className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/15 hover:text-amber-200"
+                        title={`Baixar ${video.title}`}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Baixar
+                      </a>
+                      <button type="button" onClick={() => handleDeletePracticalVideo(video.id, video.title)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200" title={`Excluir ${video.title}`}><Trash2 className="h-3.5 w-3.5" />Excluir</button>
+                    </div>
+                  </div>
+                ))}
                 {practicalDrafts.map((draft, index) => <div key={index} className="grid grid-cols-1 gap-2 border-t border-neutral-800 pt-2"><input value={draft.title} onChange={e => setPracticalDrafts(items => items.map((item, i) => i === index ? { ...item, title: e.target.value } : item))} placeholder="Título do vídeo prático" className="rounded-lg border border-neutral-800 bg-black px-2 py-2 text-neutral-100" /><input type="file" accept="video/mp4,.mp4" onChange={e => setPracticalDrafts(items => items.map((item, i) => i === index ? { ...item, file: e.target.files?.[0] || null } : item))} className="text-[10px] text-neutral-400" /><button type="button" onClick={() => setPracticalDrafts(items => items.filter((_, i) => i !== index))} className="text-left text-[10px] text-rose-400">Remover</button></div>)}
               </div>
 
